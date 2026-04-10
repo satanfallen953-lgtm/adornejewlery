@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run:*)",
+      "Bash(ffmpeg -i \"D:/user/Downloads/original-ac1ca03ccf86280f49605e65be29541a.mp4\" -vf \"fps=1/3\" -frames:v 8 \"D:/user/Downloads/ref_frame_%02d.jpg\")",
+      "Bash(node -e \":*)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(python \"D:/user/Desktop/adornejewlery/skills/ui-ux-pro-max/scripts/search.py\" \"luxury animation scroll performance smooth\" --domain ux -n 5)",
+      "Bash(cmd.exe /c \"py -3 D:\\\\user\\\\Desktop\\\\adornejewlery\\\\skills\\\\ui-ux-pro-max\\\\scripts\\\\search.py \"\"luxury animation scroll performance smooth\"\" --domain ux -n 5 2>&1\")",
+      "Bash(cmd.exe /c \"py -3 --version 2>&1 && echo PYTHON_OK\")",
+      "Bash(cmd.exe /c \"cd /d D:\\\\user\\\\Desktop\\\\adornejewlery && npm install lenis && echo DONE\")",
+      "Bash(cmd.exe /c \"cd /d D:\\\\user\\\\Desktop\\\\adornejewlery && npm install lenis\")",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(cmd.exe /c \"npm --version 2>&1 && node --version 2>&1\")",
+      "Bash(cmd /c \"taskkill /F /IM node.exe\")",
+      "Bash(cmd /c \"taskkill /F /IM node.exe 2>&1\")",
+      "Bash(cmd /c \"tasklist | findstr node.exe\")",
+      "Bash(powershell -Command \"Get-Process node -ErrorAction SilentlyContinue | Select-Object Id, CPU, WorkingSet\")",
+      "Bash(cmd /c \"copy \"\"D:\\\\user\\\\Downloads\\\\Woman_presents_emerald_202603311327.mp4\"\" \"\"D:\\\\user\\\\Desktop\\\\adornejewlery\\\\public\\\\campaign.mp4\"\"\")",
+      "Bash(cmd /c \"dir D:\\\\user\\\\Desktop\\\\adornejewlery\\\\public\\\\campaign.mp4\")",
+      "Bash(cmd /c \"if exist \"\"D:\\\\user\\\\Downloads\\\\Woman_presents_emerald_202603311327.mp4\"\" \\(echo EXISTS\\) else \\(echo NOT FOUND\\)\")",
+      "Bash(netstat -ano)",
+      "Bash(ls \"D:\\\\user\\\\Desktop\\\\adornejewlery\\\\node_modules\\\\next\\\\dist\\\\docs\"\" 2>/dev/null | head -20 || echo \"no docs dir \")",
+      "Bash(\"C:/Users/admin/AppData/Local/Python/pythoncore-3.14-64/Scripts/code-review-graph.exe\" build:*)",
+      "Bash(npx vercel:*)",
+      "Bash(npx tsc:*)",
+      "Bash(vercel remove:*)",
+      "Bash(vercel --prod --scope nials-projects-2aa9f4f7)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(npx skills:*)",
+      "Bash(npm install:*)",
+      "Bash(vercel --version)",
+      "Bash(gh api:*)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:github.com)"
+    ]
+  }
+}
