@@ -1,11 +1,8 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { useState, useRef, useEffect, useCallback, useMemo, Suspense } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Canvas, useFrame } from "@react-three/fiber";
-import { useGLTF, Environment } from "@react-three/drei";
-import * as THREE from "three";
 import { getProductById } from "@/data/products";
 
 const EASE = [0.16, 1, 0.3, 1] as const;
@@ -143,60 +140,40 @@ function LoadingScreen({ productName }: { productName: string }) {
 }
 
 /* ═══════════════════════════════════════════
-   Wrist guide overlay
+   Subtle hint that auto-fades
    ═══════════════════════════════════════════ */
-function WristGuide({ visible }: { visible: boolean }) {
+function GestureHint({ visible }: { visible: boolean }) {
   return (
     <AnimatePresence>
       {visible && (
         <motion.div
-          key="wrist-guide"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0, transition: { duration: 0.6 } }}
-          transition={{ duration: 0.5 }}
+          key="hint"
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, transition: { duration: 0.5 } }}
+          transition={{ duration: 0.6, ease: EASE }}
           style={{
-            position: "absolute", inset: 0,
-            display: "flex", flexDirection: "column",
-            alignItems: "center", justifyContent: "center",
-            pointerEvents: "none", zIndex: 15,
-            paddingBottom: 100,
+            position: "absolute", left: "50%", top: "calc(env(safe-area-inset-top, 14px) + 78px)",
+            transform: "translateX(-50%)", zIndex: 25,
+            pointerEvents: "none",
+            background: "rgba(0,0,0,0.42)",
+            backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
+            padding: "8px 14px", borderRadius: 999,
+            display: "flex", alignItems: "center", gap: 8,
           }}
         >
-          <svg style={{ position: "absolute", top: "10%", left: "6%" }} width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="rgba(255,255,255,0.8)" strokeWidth="2.5" strokeLinecap="round">
-            <path d="M2 28 L2 2 L28 2" />
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.92)"
+            strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 11V6a3 3 0 0 1 6 0v5" />
+            <path d="M9 11h11l-1 8a3 3 0 0 1-3 3H9a5 5 0 0 1-5-5v-3a4 4 0 0 1 5-4z" />
           </svg>
-          <svg style={{ position: "absolute", top: "10%", right: "6%" }} width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="rgba(255,255,255,0.8)" strokeWidth="2.5" strokeLinecap="round">
-            <path d="M20 2 L46 2 L46 28" />
-          </svg>
-          <svg style={{ position: "absolute", bottom: "32%", left: "6%" }} width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="rgba(255,255,255,0.8)" strokeWidth="2.5" strokeLinecap="round">
-            <path d="M2 20 L2 46 L28 46" />
-          </svg>
-          <svg style={{ position: "absolute", bottom: "32%", right: "6%" }} width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="rgba(255,255,255,0.8)" strokeWidth="2.5" strokeLinecap="round">
-            <path d="M20 46 L46 46 L46 20" />
-          </svg>
-
-          <svg width="160" height="210" viewBox="0 0 160 210"
-            fill="none" stroke="rgba(255,255,255,0.72)"
-            strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M46 210 L46 148 Q46 130 80 128 Q114 130 114 148 L114 210" />
-            <path d="M46 148 Q38 126 41 96 Q43 74 47 52" />
-            <path d="M62 142 Q56 116 57 90 Q58 68 62 46" />
-            <path d="M80 140 Q76 114 77 90 Q78 68 81 48" />
-            <path d="M97 142 Q95 120 94 98 Q93 80 91 64" />
-            <path d="M46 162 Q26 158 16 143 Q8 128 13 114 Q19 100 34 107" />
-            <ellipse cx="80" cy="158" rx="34" ry="11" strokeDasharray="7 4" opacity="0.9" />
-          </svg>
-
-          <p style={{
-            color: "rgba(255,255,255,0.9)",
+          <span style={{
             fontFamily: "var(--font-inter, sans-serif)",
-            fontSize: 13, letterSpacing: "0.04em",
-            margin: "12px 0 0", textAlign: "center",
-            textShadow: "0 1px 6px rgba(0,0,0,0.4)",
+            fontSize: 11, color: "rgba(255,255,255,0.95)",
+            letterSpacing: "0.06em",
           }}>
-            Position your wrist to start
-          </p>
+            Drag to position · Pinch to size
+          </span>
         </motion.div>
       )}
     </AnimatePresence>
@@ -204,157 +181,33 @@ function WristGuide({ visible }: { visible: boolean }) {
 }
 
 /* ═══════════════════════════════════════════
-   Shared overlay gesture state
+   2-D draggable bracelet overlay (transparent PNG)
    ═══════════════════════════════════════════ */
 interface OverlayState { x: number; y: number; scale: number; rotation: number; }
 
-/* ═══════════════════════════════════════════
-   3-D bracelet scene (inside R3F Canvas)
-   ═══════════════════════════════════════════ */
-function BraceletScene({ url }: { url: string }) {
-  const { scene } = useGLTF(url);
-  const groupRef = useRef<THREE.Group>(null);
-
-  const normalizedScale = useMemo(() => {
-    const box = new THREE.Box3().setFromObject(scene);
-    const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
-    return maxDim > 0 ? 1.7 / maxDim : 1;
-  }, [scene]);
-
-  // Very subtle breathing sway — just enough to show 3-D depth
-  useFrame(({ clock }) => {
-    if (groupRef.current) {
-      groupRef.current.rotation.y = Math.sin(clock.elapsedTime * 0.45) * 0.12;
-    }
-  });
-
-  // rotation: tilt bracelet loop toward the camera so it reads as "on wrist"
-  return (
-    <group ref={groupRef} scale={normalizedScale} rotation={[Math.PI * 0.18, 0, 0]}>
-      <primitive object={scene} />
-    </group>
-  );
-}
-
-/* ═══════════════════════════════════════════
-   3-D draggable bracelet overlay
-   ═══════════════════════════════════════════ */
-function DraggableBracelet3D({
-  url, name, containerRef,
-}: {
-  url: string; name: string; containerRef: React.RefObject<HTMLDivElement | null>;
-}) {
-  const [pos, setPos] = useState<OverlayState>({ x: 0, y: 0, scale: 1.2, rotation: 0 });
-  const dragRef = useRef<{ startX: number; startY: number; ox: number; oy: number } | null>(null);
-  const gestureRef = useRef<{ dist: number; angle: number; scale: number; rotation: number } | null>(null);
-
-  useEffect(() => {
-    if (!containerRef.current) return;
-    const { width, height } = containerRef.current.getBoundingClientRect();
-    setPos({ x: width / 2, y: height * 0.62, scale: 1.1, rotation: 0 });
-  }, [containerRef]);
-
-  const onTouchStart = useCallback((e: React.TouchEvent) => {
-    if (e.touches.length === 1) {
-      dragRef.current = { startX: e.touches[0].clientX, startY: e.touches[0].clientY, ox: pos.x, oy: pos.y };
-    } else if (e.touches.length === 2) {
-      const dx = e.touches[1].clientX - e.touches[0].clientX;
-      const dy = e.touches[1].clientY - e.touches[0].clientY;
-      gestureRef.current = { dist: Math.hypot(dx, dy), angle: Math.atan2(dy, dx), scale: pos.scale, rotation: pos.rotation };
-      dragRef.current = null;
-    }
-  }, [pos]);
-
-  const onTouchMove = useCallback((e: React.TouchEvent) => {
-    e.preventDefault();
-    if (e.touches.length === 1 && dragRef.current) {
-      setPos((prev) => ({ ...prev, x: dragRef.current!.ox + (e.touches[0].clientX - dragRef.current!.startX), y: dragRef.current!.oy + (e.touches[0].clientY - dragRef.current!.startY) }));
-    } else if (e.touches.length === 2 && gestureRef.current) {
-      const dx = e.touches[1].clientX - e.touches[0].clientX;
-      const dy = e.touches[1].clientY - e.touches[0].clientY;
-      const dist = Math.hypot(dx, dy);
-      const angle = Math.atan2(dy, dx);
-      setPos((prev) => ({ ...prev, scale: Math.max(0.3, Math.min(5, gestureRef.current!.scale * (dist / gestureRef.current!.dist))), rotation: gestureRef.current!.rotation + ((angle - gestureRef.current!.angle) * 180) / Math.PI }));
-    }
-  }, []);
-
-  const onTouchEnd = useCallback(() => { dragRef.current = null; gestureRef.current = null; }, []);
-
-  const onMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    dragRef.current = { startX: e.clientX, startY: e.clientY, ox: pos.x, oy: pos.y };
-    const onMove = (ev: MouseEvent) => {
-      if (!dragRef.current) return;
-      setPos((prev) => ({ ...prev, x: dragRef.current!.ox + (ev.clientX - dragRef.current!.startX), y: dragRef.current!.oy + (ev.clientY - dragRef.current!.startY) }));
-    };
-    const onUp = () => { dragRef.current = null; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }, [pos]);
-
-  const onWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    setPos((prev) => ({ ...prev, scale: Math.max(0.3, Math.min(5, prev.scale - e.deltaY * 0.002)) }));
-  }, []);
-
-  const SIZE = 260;
-  return (
-    <div
-      onMouseDown={onMouseDown} onTouchStart={onTouchStart}
-      onTouchMove={onTouchMove} onTouchEnd={onTouchEnd} onWheel={onWheel}
-      style={{
-        position: "absolute",
-        left: pos.x - (SIZE * pos.scale) / 2,
-        top: pos.y - (SIZE * pos.scale) / 2,
-        width: SIZE, height: SIZE,
-        transform: `scale(${pos.scale}) rotate(${pos.rotation}deg)`,
-        transformOrigin: "center center",
-        cursor: "grab", touchAction: "none", userSelect: "none", zIndex: 10,
-      }}
-    >
-      <Canvas
-        gl={{ alpha: true, antialias: true, preserveDrawingBuffer: true }}
-        camera={{ position: [0, 0.6, 3.2], fov: 36 }}
-        style={{ width: "100%", height: "100%", background: "transparent" }}
-        onCreated={({ gl }) => {
-          gl.domElement.setAttribute("data-overlay-canvas", "true");
-          gl.domElement.setAttribute("aria-label", name);
-        }}
-      >
-        {/* Warm gold-friendly lighting */}
-        <ambientLight intensity={0.7} color="#fff5e0" />
-        <directionalLight position={[4, 10, 6]} intensity={2.8} color="#fffaf0" castShadow />
-        <directionalLight position={[-4, 4, -4]} intensity={0.5} color="#ffd580" />
-        <pointLight position={[0, 2, 3]} intensity={1.2} color="#ffe08a" />
-        <Environment preset="studio" />
-        <Suspense fallback={null}>
-          <BraceletScene url={url} />
-        </Suspense>
-      </Canvas>
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════════
-   2-D flat-image draggable bracelet (fallback)
-   ═══════════════════════════════════════════ */
 function DraggableBracelet({
-  src, name, containerRef, transparent = false,
+  src, name, containerRef, onInteract,
 }: {
-  src: string; name: string; containerRef: React.RefObject<HTMLDivElement | null>; transparent?: boolean;
+  src: string; name: string;
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  onInteract: () => void;
 }) {
-  const [pos, setPos] = useState<OverlayState>({ x: 0, y: 0, scale: 1.2, rotation: 0 });
+  const [pos, setPos] = useState<OverlayState>({ x: 0, y: 0, scale: 0.75, rotation: 0 });
+  const [loaded, setLoaded] = useState(false);
   const dragRef = useRef<{ startX: number; startY: number; ox: number; oy: number } | null>(null);
   const gestureRef = useRef<{ dist: number; angle: number; scale: number; rotation: number } | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
     const { width, height } = containerRef.current.getBoundingClientRect();
-    setPos({ x: width / 2, y: height * 0.52, scale: 1.2, rotation: 0 });
+    // Default to center horizontally, ~42% from top — where a held-up wrist typically lands
+    // Initial scale tuned so bracelet is roughly wrist-width on a typical phone screen
+    const baseScale = Math.min(1, Math.max(0.55, width / 480));
+    setPos({ x: width / 2, y: height * 0.42, scale: baseScale, rotation: 0 });
   }, [containerRef]);
 
   const onTouchStart = useCallback((e: React.TouchEvent) => {
+    onInteract();
     if (e.touches.length === 1) {
       dragRef.current = { startX: e.touches[0].clientX, startY: e.touches[0].clientY, ox: pos.x, oy: pos.y };
     } else if (e.touches.length === 2) {
@@ -363,45 +216,74 @@ function DraggableBracelet({
       gestureRef.current = { dist: Math.hypot(dx, dy), angle: Math.atan2(dy, dx), scale: pos.scale, rotation: pos.rotation };
       dragRef.current = null;
     }
-  }, [pos]);
+  }, [pos, onInteract]);
 
   const onTouchMove = useCallback((e: React.TouchEvent) => {
     e.preventDefault();
     if (e.touches.length === 1 && dragRef.current) {
-      setPos((prev) => ({ ...prev, x: dragRef.current!.ox + (e.touches[0].clientX - dragRef.current!.startX), y: dragRef.current!.oy + (e.touches[0].clientY - dragRef.current!.startY) }));
+      setPos((prev) => ({
+        ...prev,
+        x: dragRef.current!.ox + (e.touches[0].clientX - dragRef.current!.startX),
+        y: dragRef.current!.oy + (e.touches[0].clientY - dragRef.current!.startY),
+      }));
     } else if (e.touches.length === 2 && gestureRef.current) {
       const dx = e.touches[1].clientX - e.touches[0].clientX;
       const dy = e.touches[1].clientY - e.touches[0].clientY;
       const dist = Math.hypot(dx, dy);
       const angle = Math.atan2(dy, dx);
-      setPos((prev) => ({ ...prev, scale: Math.max(0.3, Math.min(5, gestureRef.current!.scale * (dist / gestureRef.current!.dist))), rotation: gestureRef.current!.rotation + ((angle - gestureRef.current!.angle) * 180) / Math.PI }));
+      setPos((prev) => ({
+        ...prev,
+        scale: Math.max(0.3, Math.min(4, gestureRef.current!.scale * (dist / gestureRef.current!.dist))),
+        rotation: gestureRef.current!.rotation + ((angle - gestureRef.current!.angle) * 180) / Math.PI,
+      }));
     }
   }, []);
 
-  const onTouchEnd = useCallback(() => { dragRef.current = null; gestureRef.current = null; }, []);
+  const onTouchEnd = useCallback(() => {
+    dragRef.current = null;
+    gestureRef.current = null;
+  }, []);
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
+    onInteract();
     dragRef.current = { startX: e.clientX, startY: e.clientY, ox: pos.x, oy: pos.y };
     const onMove = (ev: MouseEvent) => {
       if (!dragRef.current) return;
-      setPos((prev) => ({ ...prev, x: dragRef.current!.ox + (ev.clientX - dragRef.current!.startX), y: dragRef.current!.oy + (ev.clientY - dragRef.current!.startY) }));
+      setPos((prev) => ({
+        ...prev,
+        x: dragRef.current!.ox + (ev.clientX - dragRef.current!.startX),
+        y: dragRef.current!.oy + (ev.clientY - dragRef.current!.startY),
+      }));
     };
-    const onUp = () => { dragRef.current = null; window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+    const onUp = () => {
+      dragRef.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
-  }, [pos]);
+  }, [pos, onInteract]);
 
   const onWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
-    setPos((prev) => ({ ...prev, scale: Math.max(0.3, Math.min(5, prev.scale - e.deltaY * 0.002)) }));
-  }, []);
+    onInteract();
+    setPos((prev) => ({ ...prev, scale: Math.max(0.3, Math.min(4, prev.scale - e.deltaY * 0.002)) }));
+  }, [onInteract]);
 
-  const SIZE = 200;
+  // Reference-style sizing — bracelet fills ~58% of viewport width at scale 1
+  const SIZE = 320;
+
   return (
-    <div
-      onMouseDown={onMouseDown} onTouchStart={onTouchStart}
-      onTouchMove={onTouchMove} onTouchEnd={onTouchEnd} onWheel={onWheel}
+    <motion.div
+      onMouseDown={onMouseDown}
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+      onWheel={onWheel}
+      initial={{ opacity: 0, scale: 0.92 }}
+      animate={{ opacity: loaded ? 1 : 0, scale: 1 }}
+      transition={{ duration: 0.6, ease: EASE }}
       style={{
         position: "absolute",
         left: pos.x - (SIZE * pos.scale) / 2,
@@ -410,23 +292,31 @@ function DraggableBracelet({
         transform: `scale(${pos.scale}) rotate(${pos.rotation}deg)`,
         transformOrigin: "center center",
         cursor: "grab", touchAction: "none", userSelect: "none", zIndex: 10,
+        // Soft drop shadow grounds the overlay on the wrist
+        filter: "drop-shadow(0 14px 22px rgba(0,0,0,0.38)) drop-shadow(0 3px 6px rgba(0,0,0,0.22))",
       }}
     >
-      <img src={src} alt={name} data-overlay="true" draggable={false}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={src}
+        alt={name}
+        data-overlay="true"
+        draggable={false}
+        onLoad={() => setLoaded(true)}
         style={{
-          width: "100%", height: "100%", objectFit: "contain", pointerEvents: "none",
-          mixBlendMode: transparent ? "normal" : "multiply",
-        }} />
-      {!transparent && (
-        <img src={src} alt="" aria-hidden draggable={false}
-          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", pointerEvents: "none", mixBlendMode: "screen", opacity: 0.18 }} />
-      )}
-    </div>
+          width: "100%", height: "100%",
+          objectFit: "contain",
+          pointerEvents: "none",
+          WebkitUserSelect: "none",
+          userSelect: "none",
+        }}
+      />
+    </motion.div>
   );
 }
 
 /* ═══════════════════════════════════════════
-   Capture snapshot (handles both 2-D and 3-D overlays)
+   Capture snapshot (composites video + overlay PNG)
    ═══════════════════════════════════════════ */
 async function captureSnapshot(container: HTMLDivElement, video: HTMLVideoElement) {
   const canvas = document.createElement("canvas");
@@ -434,173 +324,170 @@ async function captureSnapshot(container: HTMLDivElement, video: HTMLVideoElemen
   const h = video.videoHeight || container.clientHeight;
   canvas.width = w; canvas.height = h;
   const ctx = canvas.getContext("2d")!;
-  ctx.drawImage(video, 0, 0, w, h);
 
+  // Match the CSS object-fit: cover behaviour of the <video> element
   const cRect = container.getBoundingClientRect();
+  const videoAspect = w / h;
+  const containerAspect = cRect.width / cRect.height;
+  let drawW = w, drawH = h, drawX = 0, drawY = 0;
+  if (videoAspect > containerAspect) {
+    // video is wider than container — crop horizontally
+    drawW = h * containerAspect;
+    drawX = (w - drawW) / 2;
+  } else {
+    drawH = w / containerAspect;
+    drawY = (h - drawH) / 2;
+  }
+  // First draw a black backdrop, then the cropped video
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, w, h);
+  // Re-scale so the cropped video fills the entire canvas
   const sx = w / cRect.width;
   const sy = h / cRect.height;
+  // Draw video to fill output canvas (we'll draw it stretched then overlay items also stretched)
+  ctx.drawImage(video, drawX, drawY, drawW, drawH, 0, 0, w, h);
 
-  // 2-D image overlays
+  // Overlay images (transparent PNGs) — copy each at its bounding-rect position
   const overlayImgs = container.querySelectorAll<HTMLImageElement>("img[data-overlay]");
   for (const img of overlayImgs) {
     const rect = img.getBoundingClientRect();
-    ctx.globalCompositeOperation = "multiply";
-    ctx.drawImage(img, (rect.left - cRect.left) * sx, (rect.top - cRect.top) * sy, rect.width * sx, rect.height * sy);
+    ctx.save();
+    // Apply soft shadow on the snapshot too
+    ctx.shadowColor = "rgba(0,0,0,0.38)";
+    ctx.shadowBlur = 22 * sx;
+    ctx.shadowOffsetY = 14 * sy;
+    ctx.drawImage(
+      img,
+      (rect.left - cRect.left) * sx,
+      (rect.top - cRect.top) * sy,
+      rect.width * sx,
+      rect.height * sy,
+    );
+    ctx.restore();
   }
 
-  // 3-D WebGL canvas overlays
-  const overlayCanvases = container.querySelectorAll<HTMLCanvasElement>("canvas[data-overlay-canvas]");
-  for (const cvs of overlayCanvases) {
-    const rect = cvs.getBoundingClientRect();
-    ctx.globalCompositeOperation = "source-over";
-    ctx.drawImage(cvs, (rect.left - cRect.left) * sx, (rect.top - cRect.top) * sy, rect.width * sx, rect.height * sy);
-  }
-
-  ctx.globalCompositeOperation = "source-over";
   return canvas;
 }
 
 /* ═══════════════════════════════════════════
-   Bottom sheet — WRIST SIZE + MATERIAL tabs
+   Bottom card — WRIST SIZE + MATERIAL panes
    ═══════════════════════════════════════════ */
-function BottomSheet({
-  sizes, material, onCapture, onShare, capturing, ready,
+function BottomCard({
+  sizes, material,
 }: {
   sizes: string[]; material: string;
-  onCapture: () => void; onShare: () => void;
-  capturing: boolean; ready: boolean;
 }) {
   const [activeTab, setActiveTab] = useState<"wrist" | "material" | null>(null);
 
   return (
-    <>
-      <motion.button
-        onClick={onCapture}
-        disabled={capturing || !ready}
-        whileTap={{ scale: 0.9 }}
-        style={{
-          position: "absolute",
-          bottom: activeTab ? 148 : 112,
-          left: "50%", transform: "translateX(-50%)",
-          zIndex: 35, width: 70, height: 70, borderRadius: "50%",
-          background: "rgba(255,255,255,0.12)",
-          border: "2.5px solid rgba(255,255,255,0.85)",
-          backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
-          cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-          transition: "bottom 0.3s ease",
-        }}
-      >
-        <svg width="26" height="26" viewBox="0 0 24 24" fill="none"
-          stroke="rgba(255,255,255,0.9)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-          <circle cx="12" cy="13" r="4" />
-        </svg>
-      </motion.button>
+    <div style={{
+      position: "absolute", bottom: 0, left: 0, right: 0, zIndex: 30,
+      background: "#fff",
+      borderRadius: "22px 22px 0 0",
+      boxShadow: "0 -6px 30px rgba(0,0,0,0.18)",
+    }}>
+      <div style={{ display: "flex" }}>
+        <button
+          onClick={() => setActiveTab(activeTab === "wrist" ? null : "wrist")}
+          style={{
+            flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
+            gap: 8, padding: "18px 8px 16px", background: "none", border: "none",
+            cursor: "pointer",
+            borderBottom: activeTab === "wrist" ? "2px solid #1D3A61" : "2px solid transparent",
+            transition: "border-color 0.2s ease",
+          }}
+        >
+          <svg width="28" height="24" viewBox="0 0 28 24" fill="none"
+            stroke={activeTab === "wrist" ? "#1D3A61" : "#0c0f14"}
+            strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
+            style={{ transition: "stroke 0.2s ease" }}>
+            <path d="M5 22 L5 14 Q5 8 14 8 Q23 8 23 14 L23 22" />
+            <path d="M8 8 Q7 4 9.5 2.5 Q12 1 13.5 3 Q14.5 4.5 14 7" />
+            <path d="M14 7 Q13.5 3 16 2 Q18.5 1 19.5 3 Q20 4.5 19 7" />
+            <path d="M19 7 Q19 3 21 2.5 Q23 2 23.5 4 Q24 5.5 23 8" />
+            <path d="M5 17 Q2 16 2 13 Q2 10 5 11" />
+          </svg>
+          <span style={{
+            fontFamily: "var(--font-inter, sans-serif)",
+            fontSize: 11, letterSpacing: "0.18em", textTransform: "uppercase",
+            color: "#0c0f14", fontWeight: 500,
+          }}>Wrist Size</span>
+        </button>
 
-      <div style={{
-        position: "absolute", bottom: 0, left: 0, right: 0, zIndex: 30,
-        background: "#fff", borderRadius: "18px 18px 0 0",
-        boxShadow: "0 -4px 32px rgba(0,0,0,0.12)",
-      }}>
-        <div style={{ width: 32, height: 4, background: "rgba(0,0,0,0.12)", borderRadius: 2, margin: "10px auto 0" }} />
+        <div style={{ width: 1, background: "rgba(0,0,0,0.08)", margin: "16px 0" }} />
 
-        <div style={{ display: "flex", padding: "10px 16px 0" }}>
-          <button
-            onClick={() => setActiveTab(activeTab === "wrist" ? null : "wrist")}
-            style={{
-              flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
-              gap: 5, padding: "10px 8px 12px", background: "none", border: "none",
-              cursor: "pointer", borderBottom: activeTab === "wrist" ? "2px solid #1D3A61" : "2px solid transparent",
-              transition: "border-color 0.2s ease",
-            }}
-          >
-            <svg width="26" height="22" viewBox="0 0 26 22" fill="none"
-              stroke={activeTab === "wrist" ? "#1D3A61" : "rgba(29,58,97,0.38)"}
-              strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
-              style={{ transition: "stroke 0.2s ease" }}>
-              <path d="M4 20 L4 13 Q4 7 13 7 Q22 7 22 13 L22 20" />
-              <path d="M7 7 Q6 3 8.5 1.5 Q11 0 12.5 2 Q13.5 3.5 13 6" />
-              <path d="M13 6 Q12.5 2 15 1 Q17.5 0 18.5 2 Q19 3.5 18 6" />
-              <path d="M18 6 Q18 2 20 1.5 Q22 1 22.5 3 Q23 4.5 22 7" />
-              <path d="M4 16 Q1 15 1 12 Q1 9 4 10" />
-            </svg>
-            <span style={{
-              fontFamily: "var(--font-inter, sans-serif)", fontSize: 8.5,
-              letterSpacing: "0.2em", textTransform: "uppercase",
-              color: activeTab === "wrist" ? "#1D3A61" : "rgba(29,58,97,0.42)",
-              fontWeight: activeTab === "wrist" ? 600 : 400,
-              transition: "color 0.2s ease",
-            }}>Wrist Size</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab(activeTab === "material" ? null : "material")}
-            style={{
-              flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
-              gap: 5, padding: "10px 8px 12px", background: "none", border: "none",
-              cursor: "pointer", borderBottom: activeTab === "material" ? "2px solid #1D3A61" : "2px solid transparent",
-              transition: "border-color 0.2s ease",
-            }}
-          >
-            <svg width="26" height="22" viewBox="0 0 26 22" fill="none"
-              stroke={activeTab === "material" ? "#1D3A61" : "rgba(29,58,97,0.38)"}
-              strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
-              style={{ transition: "stroke 0.2s ease" }}>
-              <rect x="2" y="2" width="22" height="18" rx="2" />
-              <line x1="2" y1="8" x2="24" y2="8" opacity="0.45" />
-              <line x1="2" y1="14" x2="24" y2="14" opacity="0.45" />
-              <line x1="9" y1="2" x2="9" y2="20" opacity="0.45" />
-              <line x1="17" y1="2" x2="17" y2="20" opacity="0.45" />
-            </svg>
-            <span style={{
-              fontFamily: "var(--font-inter, sans-serif)", fontSize: 8.5,
-              letterSpacing: "0.2em", textTransform: "uppercase",
-              color: activeTab === "material" ? "#1D3A61" : "rgba(29,58,97,0.42)",
-              fontWeight: activeTab === "material" ? 600 : 400,
-              transition: "color 0.2s ease",
-            }}>Material</span>
-          </button>
-        </div>
-
-        <AnimatePresence>
-          {activeTab === "wrist" && (
-            <motion.div key="wrist-tab"
-              initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.26, ease: EASE }}
-              style={{ overflow: "hidden" }}
-            >
-              <div style={{ padding: "10px 20px 20px", display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {sizes.map((s) => (
-                  <span key={s} style={{
-                    padding: "7px 16px", border: "1px solid rgba(29,58,97,0.2)",
-                    fontFamily: "var(--font-inter, sans-serif)", fontSize: 10,
-                    letterSpacing: "0.1em", color: "#1D3A61",
-                  }}>{s}</span>
-                ))}
-              </div>
-            </motion.div>
-          )}
-          {activeTab === "material" && (
-            <motion.div key="material-tab"
-              initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.26, ease: EASE }}
-              style={{ overflow: "hidden" }}
-            >
-              <div style={{ padding: "10px 20px 20px" }}>
-                <p style={{
-                  fontFamily: "var(--font-inter, sans-serif)", fontSize: 11,
-                  color: "rgba(29,58,97,0.6)", lineHeight: 1.65, margin: 0,
-                }}>
-                  {material}
-                </p>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <div style={{ height: "env(safe-area-inset-bottom, 8px)" }} />
+        <button
+          onClick={() => setActiveTab(activeTab === "material" ? null : "material")}
+          style={{
+            flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
+            gap: 8, padding: "18px 8px 16px", background: "none", border: "none",
+            cursor: "pointer",
+            borderBottom: activeTab === "material" ? "2px solid #1D3A61" : "2px solid transparent",
+            transition: "border-color 0.2s ease",
+          }}
+        >
+          <svg width="26" height="24" viewBox="0 0 26 24" fill="none"
+            stroke={activeTab === "material" ? "#1D3A61" : "#0c0f14"}
+            strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
+            style={{ transition: "stroke 0.2s ease" }}>
+            <rect x="3" y="3" width="20" height="18" rx="2" />
+            <line x1="6" y1="20" x2="20" y2="6" opacity="0.6" />
+            <line x1="10" y1="20" x2="20" y2="10" opacity="0.6" />
+            <line x1="14" y1="20" x2="20" y2="14" opacity="0.6" />
+          </svg>
+          <span style={{
+            fontFamily: "var(--font-inter, sans-serif)",
+            fontSize: 11, letterSpacing: "0.18em", textTransform: "uppercase",
+            color: "#0c0f14", fontWeight: 500,
+          }}>Material</span>
+        </button>
       </div>
-    </>
+
+      <AnimatePresence>
+        {activeTab === "wrist" && (
+          <motion.div key="wrist-tab"
+            initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.26, ease: EASE }}
+            style={{ overflow: "hidden" }}
+          >
+            <div style={{ padding: "10px 22px 22px", display: "flex", gap: 10, flexWrap: "wrap" }}>
+              {sizes.length === 0 && (
+                <span style={{
+                  fontFamily: "var(--font-inter, sans-serif)", fontSize: 11,
+                  color: "rgba(0,0,0,0.5)", letterSpacing: "0.04em",
+                }}>One size — adjustable fit</span>
+              )}
+              {sizes.map((s) => (
+                <span key={s} style={{
+                  padding: "8px 16px", border: "1px solid rgba(0,0,0,0.18)", borderRadius: 999,
+                  fontFamily: "var(--font-inter, sans-serif)", fontSize: 11,
+                  letterSpacing: "0.08em", color: "#0c0f14",
+                }}>{s}</span>
+              ))}
+            </div>
+          </motion.div>
+        )}
+        {activeTab === "material" && (
+          <motion.div key="material-tab"
+            initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.26, ease: EASE }}
+            style={{ overflow: "hidden" }}
+          >
+            <div style={{ padding: "10px 22px 22px" }}>
+              <p style={{
+                fontFamily: "var(--font-inter, sans-serif)", fontSize: 12,
+                color: "rgba(0,0,0,0.7)", lineHeight: 1.65, margin: 0,
+                letterSpacing: "0.02em",
+              }}>
+                {material}
+              </p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <div style={{ height: "env(safe-area-inset-bottom, 12px)" }} />
+    </div>
   );
 }
 
@@ -613,16 +500,17 @@ export default function TryOnPage() {
   const id = Number(params.id);
   const product = getProductById(id);
 
-  const [facingMode, setFacingMode] = useState<"user" | "environment">("environment");
-  const [showGuide, setShowGuide] = useState(true);
+  const [facingMode] = useState<"user" | "environment">("environment");
+  const [showHint, setShowHint] = useState(true);
   const [capturing, setCapturing] = useState(false);
   const [flash, setFlash] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const { videoRef, ready, denied } = useCamera(facingMode);
 
+  // Auto-hide hint 4s after camera is ready, or on first interaction
   useEffect(() => {
     if (!ready) return;
-    const t = setTimeout(() => setShowGuide(false), 4000);
+    const t = setTimeout(() => setShowHint(false), 4000);
     return () => clearTimeout(t);
   }, [ready]);
 
@@ -654,27 +542,6 @@ export default function TryOnPage() {
     }
   }, [videoRef, capturing, product]);
 
-  const handleShare = useCallback(async () => {
-    if (!containerRef.current || !videoRef.current) return;
-    setCapturing(true);
-    try {
-      const canvas = await captureSnapshot(containerRef.current, videoRef.current);
-      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
-      if (!blob) return;
-      const file = new File([blob], `adorne-tryon-${Date.now()}.png`, { type: "image/png" });
-      if (navigator.share && navigator.canShare?.({ files: [file] })) {
-        await navigator.share({ files: [file], title: product?.name, text: "Try on with ADORNE" });
-      } else {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url; a.download = file.name; a.click();
-        URL.revokeObjectURL(url);
-      }
-    } finally {
-      setCapturing(false);
-    }
-  }, [videoRef, product]);
-
   if (!product) {
     return (
       <div style={{ minHeight: "100svh", background: "#fff", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -684,6 +551,8 @@ export default function TryOnPage() {
       </div>
     );
   }
+
+  const overlaySrc = product.tryOnImage ?? product.images[0];
 
   return (
     <div ref={containerRef} style={{ position: "fixed", inset: 0, background: "#000", overflow: "hidden" }}>
@@ -721,89 +590,95 @@ export default function TryOnPage() {
         )}
       </AnimatePresence>
 
-      {/* ── Wrist guide ── */}
-      {ready && <WristGuide visible={showGuide} />}
+      {/* ── Bracelet overlay (transparent PNG, draggable + pinch-scale) ── */}
+      {ready && (
+        <DraggableBracelet
+          src={overlaySrc}
+          name={product.name}
+          containerRef={containerRef}
+          onInteract={() => setShowHint(false)}
+        />
+      )}
 
-      {/* ── Bracelet overlay ── */}
-      <AnimatePresence>
-        {ready && !showGuide && (
-          <motion.div key="bracelet" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.6 }}
-            style={{ position: "absolute", inset: 0, zIndex: 10 }}>
-            {product.tryOnModel ? (
-              <DraggableBracelet3D
-                url={product.tryOnModel}
-                name={product.name}
-                containerRef={containerRef}
-              />
-            ) : (
-              <DraggableBracelet
-                src={product.tryOnImage ?? product.images[0]}
-                name={product.name}
-                containerRef={containerRef}
-                transparent={!!product.tryOnImage}
-              />
-            )}
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* ── Gesture hint pill ── */}
+      {ready && <GestureHint visible={showHint} />}
 
       {/* ── Flash feedback ── */}
       <AnimatePresence>
         {flash && (
-          <motion.div key="flash" initial={{ opacity: 0.8 }} animate={{ opacity: 0 }} exit={{ opacity: 0 }}
+          <motion.div key="flash" initial={{ opacity: 0.85 }} animate={{ opacity: 0 }} exit={{ opacity: 0 }}
             transition={{ duration: 0.18 }} style={{ position: "absolute", inset: 0, background: "#fff", pointerEvents: "none", zIndex: 40 }} />
         )}
       </AnimatePresence>
 
-      {/* ── Top bar ── */}
+      {/* ── Top bar — product name (centered) + close (right) ── */}
       <div style={{
         position: "absolute", top: 0, left: 0, right: 0, zIndex: 30,
-        padding: "env(safe-area-inset-top, 14px) 18px 16px",
-        background: "linear-gradient(to bottom, rgba(0,0,0,0.55) 0%, transparent 100%)",
-        display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "calc(env(safe-area-inset-top, 14px) + 14px) 18px 18px",
+        display: "flex", alignItems: "flex-start", justifyContent: "center",
+        pointerEvents: "none",
       }}>
-        <button onClick={() => router.back()} aria-label="Close" style={{
-          width: 40, height: 40, borderRadius: "50%", background: "rgba(0,0,0,0.28)",
-          border: "none", color: "#fff", cursor: "pointer",
-          display: "flex", alignItems: "center", justifyContent: "center",
+        <p style={{
+          fontFamily: "var(--font-inter, sans-serif)",
+          fontSize: 13, fontWeight: 600,
+          letterSpacing: "0.16em", textTransform: "uppercase",
+          color: "#0c0f14", margin: 0, textAlign: "center",
+          maxWidth: "75%", lineHeight: 1.35,
+          textShadow: "0 1px 12px rgba(255,255,255,0.4)",
         }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+          {product.name}
+        </p>
+
+        <button onClick={() => router.back()} aria-label="Close" style={{
+          position: "absolute",
+          top: "calc(env(safe-area-inset-top, 14px) + 10px)",
+          right: 16,
+          width: 38, height: 38, borderRadius: "50%",
+          background: "#fff",
+          border: "none", color: "#0c0f14", cursor: "pointer",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          boxShadow: "0 2px 10px rgba(0,0,0,0.18)",
+          pointerEvents: "auto",
+        }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
-        </button>
-
-        <div style={{ textAlign: "center" }}>
-          <p style={{ fontFamily: "var(--font-inter,sans-serif)", fontSize: 7.5, letterSpacing: "0.28em", textTransform: "uppercase", color: "rgba(255,255,255,0.5)", margin: 0 }}>
-            Virtual Try-On
-          </p>
-          <p style={{ fontFamily: "var(--font-cormorant,serif)", fontSize: 14, fontStyle: "italic", fontWeight: 300, color: "#fff", margin: "2px 0 0" }}>
-            {product.name}
-          </p>
-        </div>
-
-        <button onClick={() => { setFacingMode((m) => (m === "environment" ? "user" : "environment")); setShowGuide(true); }}
-          aria-label="Flip camera" style={{
-            width: 40, height: 40, borderRadius: "50%", background: "rgba(0,0,0,0.28)",
-            border: "none", color: "#fff", cursor: "pointer",
-            display: "flex", alignItems: "center", justifyContent: "center",
-          }}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M1 4v6h6" /><path d="M23 20v-6h-6" />
-            <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10" />
-            <path d="M3.51 15a9 9 0 0 0 14.85 3.36L23 14" />
           </svg>
         </button>
       </div>
 
-      {/* ── Bottom sheet ── */}
+      {/* ── Shutter button (above bottom card) ── */}
       {ready && (
-        <BottomSheet
+        <motion.button
+          onClick={handleCapture}
+          disabled={capturing}
+          whileTap={{ scale: 0.9 }}
+          aria-label="Take photo"
+          style={{
+            position: "absolute",
+            bottom: "calc(env(safe-area-inset-bottom, 12px) + 110px)",
+            left: "50%", transform: "translateX(-50%)",
+            zIndex: 35, width: 72, height: 72, borderRadius: "50%",
+            background: "rgba(255,255,255,0.18)",
+            border: "3px solid #fff",
+            backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
+            cursor: "pointer",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            boxShadow: "0 4px 14px rgba(0,0,0,0.28)",
+          }}
+        >
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none"
+            stroke="#fff" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+            <circle cx="12" cy="13" r="4" />
+          </svg>
+        </motion.button>
+      )}
+
+      {/* ── Bottom card ── */}
+      {ready && (
+        <BottomCard
           sizes={product.sizes ?? []}
           material={product.material}
-          onCapture={handleCapture}
-          onShare={handleShare}
-          capturing={capturing}
-          ready={ready}
         />
       )}
     </div>
