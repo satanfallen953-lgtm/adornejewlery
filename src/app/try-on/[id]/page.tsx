@@ -376,13 +376,14 @@ function TrackedBracelet({
   visible: boolean;
 }) {
   if (!pose) return null;
-  // The PNG asset is roughly 660px wide with the bracelet visual filling
-  // ~88% of its width. We size the wrapper so that pose.width corresponds
-  // to the actual bracelet (not the padding), so divide by 0.88.
-  const ASSET_FILL = 0.88;
+  // Asset is a 500x500 square PNG of the bangle in 3D perspective.
+  // The bangle fills ~78% of the width; size the wrapper so pose.width
+  // corresponds to the actual bracelet width, not the transparent padding.
+  const ASSET_FILL = 0.78;
   const wrapperW = pose.width / ASSET_FILL;
-  // Maintain bracelet aspect ratio (~560/300 ≈ 1.86 wide:tall)
-  const wrapperH = wrapperW * 0.55;
+  // Square asset → square wrapper. The bangle's vertical extent is shorter
+  // than its horizontal, but `object-fit: contain` keeps it correctly placed.
+  const wrapperH = wrapperW;
 
   return (
     <div

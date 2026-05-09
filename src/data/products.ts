@@ -269,7 +269,7 @@ export const PRODUCTS: Product[] = [
       "/category%20products%20images/Italian%20Customized%20Charms%20Bracelet.jpg",
       "/category%20products%20images/Italian%20Customized%20Charms%20Bracelet%20model.jpg",
     ],
-    tryOnImage: "/products/ItalianBracelets-removebg-preview.png",
+    tryOnImage: "/products/ItalianBracelet-perspective.png",
     sizes: ["17 cm", "19 cm", "21 cm"],
     isNew: false,
   },
@@ -305,7 +305,7 @@ export const PRODUCTS: Product[] = [
       "/category%20products%20images/Italian%20Customized%20Charms%20Bracelet%20(Gold).jpg",
       "/category%20products%20images/Italian%20Customized%20Charms%20Bracelet%20(Gold)%20model.jpg",
     ],
-    tryOnImage: "/products/ItalianBracelets-removebg-preview.png",
+    tryOnImage: "/products/ItalianBracelet-perspective.png",
     isNew: false,
   },
   {
