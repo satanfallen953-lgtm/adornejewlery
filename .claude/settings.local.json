@@ -32,7 +32,11 @@
       "Bash(vercel --version)",
       "Bash(gh api:*)",
       "WebFetch(domain:api.github.com)",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Read(//d/user/Desktop/adornejewlery/**)",
+      "Bash(vercel deploy *)"
     ]
   }
 }
