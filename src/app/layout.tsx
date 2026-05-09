@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Playfair_Display, Inter, Cormorant_Garamond } from "next/font/google";
 import "./globals.css";
 import SmoothScrollProvider from "@/components/SmoothScrollProvider";
+import LuxuryCursor from "@/components/LuxuryCursor";
 
 const playfairDisplay = Playfair_Display({
   variable: "--font-playfair-display",
@@ -47,6 +48,7 @@ export default function RootLayout({
       className={`${playfairDisplay.variable} ${cormorantGaramond.variable} ${inter.variable} antialiased`}
     >
       <body>
+        <LuxuryCursor />
         <SmoothScrollProvider>{children}</SmoothScrollProvider>
       </body>
     </html>
