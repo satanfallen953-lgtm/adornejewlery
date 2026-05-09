@@ -4,6 +4,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { getProductById } from "@/data/products";
+import type { HandLandmarker as HandLandmarkerType } from "@mediapipe/tasks-vision";
 
 const EASE = [0.16, 1, 0.3, 1] as const;
 
@@ -26,7 +27,7 @@ function useCamera(facingMode: "user" | "environment") {
       streamRef.current = null;
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode, width: { ideal: 1920 }, height: { ideal: 1080 } },
+          video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
           audio: false,
         });
         if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
@@ -34,7 +35,7 @@ function useCamera(facingMode: "user" | "environment") {
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           videoRef.current.play().catch(() => {});
-          setReady(true);
+          videoRef.current.onloadeddata = () => { if (!cancelled) setReady(true); };
         }
       } catch {
         if (!cancelled) setDenied(true);
@@ -53,9 +54,194 @@ function useCamera(facingMode: "user" | "environment") {
 }
 
 /* ═══════════════════════════════════════════
+   Hand-tracking hook (MediaPipe HandLandmarker)
+   ═══════════════════════════════════════════ */
+interface WristPose {
+  /** Bracelet centre, in screen pixels relative to viewport */
+  x: number;
+  y: number;
+  /** Rotation in degrees (matches the angle of the wrist line) */
+  rotation: number;
+  /** Bracelet width in pixels (matches detected wrist width) */
+  width: number;
+}
+
+function useHandTracking(
+  videoRef: React.RefObject<HTMLVideoElement | null>,
+  ready: boolean,
+  mirrored: boolean,
+) {
+  const [pose, setPose] = useState<WristPose | null>(null);
+  const [tracking, setTracking] = useState(false);
+  const landmarkerRef = useRef<HandLandmarkerType | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const lastDetectMsRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (!ready || !videoRef.current) return;
+    let cancelled = false;
+
+    async function init() {
+      try {
+        // Lazy-import so the wasm only loads when we actually need it
+        const mp = await import("@mediapipe/tasks-vision");
+        const vision = await mp.FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm",
+        );
+        if (cancelled) return;
+        const landmarker = await mp.HandLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath:
+              "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+            delegate: "GPU",
+          },
+          runningMode: "VIDEO",
+          numHands: 1,
+          minHandDetectionConfidence: 0.5,
+          minHandPresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5,
+        });
+        if (cancelled) {
+          landmarker.close();
+          return;
+        }
+        landmarkerRef.current = landmarker;
+        loop();
+      } catch (err) {
+        console.error("[hand-tracking] init failed", err);
+      }
+    }
+
+    // Smoothed pose (exponential moving average) so the bracelet doesn't jitter
+    const smooth = { x: 0, y: 0, rot: 0, w: 0, set: false };
+    const SMOOTH = 0.4; // 0 = no movement, 1 = instant snap
+
+    function loop() {
+      if (cancelled) return;
+      const video = videoRef.current;
+      const lm = landmarkerRef.current;
+      if (!video || !lm || video.readyState < 2) {
+        rafRef.current = requestAnimationFrame(loop);
+        return;
+      }
+      const now = performance.now();
+      // Throttle to ~30fps to save battery
+      if (now - lastDetectMsRef.current < 33) {
+        rafRef.current = requestAnimationFrame(loop);
+        return;
+      }
+      lastDetectMsRef.current = now;
+
+      let result;
+      try {
+        result = lm.detectForVideo(video, now);
+      } catch {
+        rafRef.current = requestAnimationFrame(loop);
+        return;
+      }
+
+      if (result.landmarks && result.landmarks.length > 0) {
+        const lms = result.landmarks[0];
+        const wrist = lms[0];
+        const indexMcp = lms[5];
+        const pinkyMcp = lms[17];
+
+        // The video element uses object-fit: cover. Map normalized [0,1]
+        // landmark coords back to screen pixels accounting for the crop.
+        const rect = video.getBoundingClientRect();
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        const videoAspect = vw / vh;
+        const dispAspect = rect.width / rect.height;
+
+        let scaleFit, cropX = 0, cropY = 0;
+        if (videoAspect > dispAspect) {
+          // Video is wider than display — left/right are cropped
+          scaleFit = rect.height / vh;
+          cropX = (vw * scaleFit - rect.width) / 2;
+        } else {
+          // Video is taller than display — top/bottom are cropped
+          scaleFit = rect.width / vw;
+          cropY = (vh * scaleFit - rect.height) / 2;
+        }
+
+        const toScreen = (nx: number, ny: number) => {
+          // If the video is CSS-mirrored (selfie cam), flip x
+          const px = (mirrored ? 1 - nx : nx) * vw * scaleFit - cropX + rect.left;
+          const py = ny * vh * scaleFit - cropY + rect.top;
+          return [px, py] as const;
+        };
+
+        const [wx, wy] = toScreen(wrist.x, wrist.y);
+        const [ix, iy] = toScreen(indexMcp.x, indexMcp.y);
+        const [pxk, pyk] = toScreen(pinkyMcp.x, pinkyMcp.y);
+
+        // Palm centre (midpoint of index-mcp and pinky-mcp)
+        const palmCx = (ix + pxk) / 2;
+        const palmCy = (iy + pyk) / 2;
+
+        // Hand axis: vector from wrist toward palm (i.e. toward the fingers).
+        // The bracelet should sit just past the wrist, opposite the fingers.
+        const hdX = palmCx - wx;
+        const hdY = palmCy - wy;
+        const hdLen = Math.hypot(hdX, hdY) || 1;
+
+        // Position bracelet ~30% of palm-length below the wrist landmark
+        // (i.e. on the forearm, where a watch would sit).
+        const OFFSET = 0.35;
+        const bx = wx - (hdX / hdLen) * hdLen * OFFSET;
+        const by = wy - (hdY / hdLen) * hdLen * OFFSET;
+
+        // Rotation: align bracelet horizontal axis with the line between
+        // the index-mcp and pinky-mcp (perpendicular to the arm).
+        let rot = (Math.atan2(pyk - iy, pxk - ix) * 180) / Math.PI;
+        // Normalise to [-180,180] then keep close to previous to avoid 360° flips
+        if (smooth.set) {
+          while (rot - smooth.rot > 180) rot -= 360;
+          while (rot - smooth.rot < -180) rot += 360;
+        }
+
+        // Bracelet width: roughly 1.55× palm width feels natural for a wrist
+        const palmWidth = Math.hypot(pxk - ix, pyk - iy);
+        const targetW = palmWidth * 1.55;
+
+        if (!smooth.set) {
+          smooth.x = bx; smooth.y = by; smooth.rot = rot; smooth.w = targetW;
+          smooth.set = true;
+        } else {
+          smooth.x += (bx - smooth.x) * SMOOTH;
+          smooth.y += (by - smooth.y) * SMOOTH;
+          smooth.rot += (rot - smooth.rot) * SMOOTH;
+          smooth.w += (targetW - smooth.w) * SMOOTH;
+        }
+
+        setPose({ x: smooth.x, y: smooth.y, rotation: smooth.rot, width: smooth.w });
+        setTracking(true);
+      } else {
+        setTracking(false);
+        // keep last pose so the bracelet doesn't disappear if the hand briefly leaves
+      }
+
+      rafRef.current = requestAnimationFrame(loop);
+    }
+
+    init();
+
+    return () => {
+      cancelled = true;
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      landmarkerRef.current?.close();
+      landmarkerRef.current = null;
+    };
+  }, [ready, videoRef, mirrored]);
+
+  return { pose, tracking };
+}
+
+/* ═══════════════════════════════════════════
    Loading screen — Cartier-style
    ═══════════════════════════════════════════ */
-function LoadingScreen({ productName }: { productName: string }) {
+function LoadingScreen({ productName, sub }: { productName: string; sub: string }) {
   return (
     <motion.div
       key="loading"
@@ -125,7 +311,7 @@ function LoadingScreen({ productName }: { productName: string }) {
           fontSize: 14, color: "#1D3A61", opacity: 0.65,
           letterSpacing: "0.02em", marginBottom: 14,
         }}>
-          Loading...
+          {sub}
         </p>
         <p style={{
           fontFamily: "var(--font-inter, sans-serif)",
@@ -140,160 +326,82 @@ function LoadingScreen({ productName }: { productName: string }) {
 }
 
 /* ═══════════════════════════════════════════
-   Subtle hint that auto-fades
+   Tracking status pill (top under product name)
    ═══════════════════════════════════════════ */
-function GestureHint({ visible }: { visible: boolean }) {
+function TrackingStatus({ tracking }: { tracking: boolean }) {
   return (
-    <AnimatePresence>
-      {visible && (
-        <motion.div
-          key="hint"
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, transition: { duration: 0.5 } }}
-          transition={{ duration: 0.6, ease: EASE }}
-          style={{
-            position: "absolute", left: "50%", top: "calc(env(safe-area-inset-top, 14px) + 78px)",
-            transform: "translateX(-50%)", zIndex: 25,
-            pointerEvents: "none",
-            background: "rgba(0,0,0,0.42)",
-            backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
-            padding: "8px 14px", borderRadius: 999,
-            display: "flex", alignItems: "center", gap: 8,
-          }}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.92)"
-            strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M9 11V6a3 3 0 0 1 6 0v5" />
-            <path d="M9 11h11l-1 8a3 3 0 0 1-3 3H9a5 5 0 0 1-5-5v-3a4 4 0 0 1 5-4z" />
-          </svg>
-          <span style={{
-            fontFamily: "var(--font-inter, sans-serif)",
-            fontSize: 11, color: "rgba(255,255,255,0.95)",
-            letterSpacing: "0.06em",
-          }}>
-            Drag to position · Pinch to size
-          </span>
-        </motion.div>
-      )}
+    <AnimatePresence mode="wait">
+      <motion.div
+        key={tracking ? "on" : "off"}
+        initial={{ opacity: 0, y: -4 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -4 }}
+        transition={{ duration: 0.35, ease: EASE }}
+        style={{
+          position: "absolute",
+          top: "calc(env(safe-area-inset-top, 14px) + 64px)",
+          left: "50%", transform: "translateX(-50%)",
+          zIndex: 25, pointerEvents: "none",
+          background: tracking ? "rgba(20,80,40,0.65)" : "rgba(0,0,0,0.55)",
+          backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
+          padding: "6px 12px", borderRadius: 999,
+          display: "flex", alignItems: "center", gap: 8,
+        }}
+      >
+        <span style={{
+          width: 6, height: 6, borderRadius: "50%",
+          background: tracking ? "#5fffaa" : "#ffd24f",
+          boxShadow: `0 0 8px ${tracking ? "#5fffaa" : "#ffd24f"}`,
+        }} />
+        <span style={{
+          fontFamily: "var(--font-inter, sans-serif)",
+          fontSize: 10, color: "rgba(255,255,255,0.95)",
+          letterSpacing: "0.14em", textTransform: "uppercase",
+        }}>
+          {tracking ? "Wrist locked" : "Show your wrist"}
+        </span>
+      </motion.div>
     </AnimatePresence>
   );
 }
 
 /* ═══════════════════════════════════════════
-   2-D draggable bracelet overlay (transparent PNG)
+   Bracelet overlay — auto-positioned by tracking
    ═══════════════════════════════════════════ */
-interface OverlayState { x: number; y: number; scale: number; rotation: number; }
-
-function DraggableBracelet({
-  src, name, containerRef, onInteract,
+function TrackedBracelet({
+  src, name, pose, visible,
 }: {
   src: string; name: string;
-  containerRef: React.RefObject<HTMLDivElement | null>;
-  onInteract: () => void;
+  pose: WristPose | null;
+  visible: boolean;
 }) {
-  const [pos, setPos] = useState<OverlayState>({ x: 0, y: 0, scale: 0.75, rotation: 0 });
-  const [loaded, setLoaded] = useState(false);
-  const dragRef = useRef<{ startX: number; startY: number; ox: number; oy: number } | null>(null);
-  const gestureRef = useRef<{ dist: number; angle: number; scale: number; rotation: number } | null>(null);
-
-  useEffect(() => {
-    if (!containerRef.current) return;
-    const { width, height } = containerRef.current.getBoundingClientRect();
-    // Default to center horizontally, ~42% from top — where a held-up wrist typically lands
-    // Initial scale tuned so bracelet is roughly wrist-width on a typical phone screen
-    const baseScale = Math.min(1, Math.max(0.55, width / 480));
-    setPos({ x: width / 2, y: height * 0.42, scale: baseScale, rotation: 0 });
-  }, [containerRef]);
-
-  const onTouchStart = useCallback((e: React.TouchEvent) => {
-    onInteract();
-    if (e.touches.length === 1) {
-      dragRef.current = { startX: e.touches[0].clientX, startY: e.touches[0].clientY, ox: pos.x, oy: pos.y };
-    } else if (e.touches.length === 2) {
-      const dx = e.touches[1].clientX - e.touches[0].clientX;
-      const dy = e.touches[1].clientY - e.touches[0].clientY;
-      gestureRef.current = { dist: Math.hypot(dx, dy), angle: Math.atan2(dy, dx), scale: pos.scale, rotation: pos.rotation };
-      dragRef.current = null;
-    }
-  }, [pos, onInteract]);
-
-  const onTouchMove = useCallback((e: React.TouchEvent) => {
-    e.preventDefault();
-    if (e.touches.length === 1 && dragRef.current) {
-      setPos((prev) => ({
-        ...prev,
-        x: dragRef.current!.ox + (e.touches[0].clientX - dragRef.current!.startX),
-        y: dragRef.current!.oy + (e.touches[0].clientY - dragRef.current!.startY),
-      }));
-    } else if (e.touches.length === 2 && gestureRef.current) {
-      const dx = e.touches[1].clientX - e.touches[0].clientX;
-      const dy = e.touches[1].clientY - e.touches[0].clientY;
-      const dist = Math.hypot(dx, dy);
-      const angle = Math.atan2(dy, dx);
-      setPos((prev) => ({
-        ...prev,
-        scale: Math.max(0.3, Math.min(4, gestureRef.current!.scale * (dist / gestureRef.current!.dist))),
-        rotation: gestureRef.current!.rotation + ((angle - gestureRef.current!.angle) * 180) / Math.PI,
-      }));
-    }
-  }, []);
-
-  const onTouchEnd = useCallback(() => {
-    dragRef.current = null;
-    gestureRef.current = null;
-  }, []);
-
-  const onMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    onInteract();
-    dragRef.current = { startX: e.clientX, startY: e.clientY, ox: pos.x, oy: pos.y };
-    const onMove = (ev: MouseEvent) => {
-      if (!dragRef.current) return;
-      setPos((prev) => ({
-        ...prev,
-        x: dragRef.current!.ox + (ev.clientX - dragRef.current!.startX),
-        y: dragRef.current!.oy + (ev.clientY - dragRef.current!.startY),
-      }));
-    };
-    const onUp = () => {
-      dragRef.current = null;
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }, [pos, onInteract]);
-
-  const onWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    onInteract();
-    setPos((prev) => ({ ...prev, scale: Math.max(0.3, Math.min(4, prev.scale - e.deltaY * 0.002)) }));
-  }, [onInteract]);
-
-  // Reference-style sizing — bracelet fills ~58% of viewport width at scale 1
-  const SIZE = 320;
+  if (!pose) return null;
+  // The PNG asset is roughly 660px wide with the bracelet visual filling
+  // ~88% of its width. We size the wrapper so that pose.width corresponds
+  // to the actual bracelet (not the padding), so divide by 0.88.
+  const ASSET_FILL = 0.88;
+  const wrapperW = pose.width / ASSET_FILL;
+  // Maintain bracelet aspect ratio (~560/300 ≈ 1.86 wide:tall)
+  const wrapperH = wrapperW * 0.55;
 
   return (
-    <motion.div
-      onMouseDown={onMouseDown}
-      onTouchStart={onTouchStart}
-      onTouchMove={onTouchMove}
-      onTouchEnd={onTouchEnd}
-      onWheel={onWheel}
-      initial={{ opacity: 0, scale: 0.92 }}
-      animate={{ opacity: loaded ? 1 : 0, scale: 1 }}
-      transition={{ duration: 0.6, ease: EASE }}
+    <div
       style={{
         position: "absolute",
-        left: pos.x - (SIZE * pos.scale) / 2,
-        top: pos.y - (SIZE * pos.scale) / 2,
-        width: SIZE, height: SIZE,
-        transform: `scale(${pos.scale}) rotate(${pos.rotation}deg)`,
+        left: pose.x - wrapperW / 2,
+        top: pose.y - wrapperH / 2,
+        width: wrapperW,
+        height: wrapperH,
+        transform: `rotate(${pose.rotation}deg)`,
         transformOrigin: "center center",
-        cursor: "grab", touchAction: "none", userSelect: "none", zIndex: 10,
-        // Soft drop shadow grounds the overlay on the wrist
-        filter: "drop-shadow(0 14px 22px rgba(0,0,0,0.38)) drop-shadow(0 3px 6px rgba(0,0,0,0.22))",
+        zIndex: 10,
+        pointerEvents: "none",
+        opacity: visible ? 1 : 0,
+        transition: "opacity 0.45s ease",
+        // Soft contact shadow so the bracelet feels grounded on the wrist
+        filter:
+          "drop-shadow(0 6px 10px rgba(0,0,0,0.45)) drop-shadow(0 1px 3px rgba(0,0,0,0.35))",
+        willChange: "transform, left, top, width, height",
       }}
     >
       {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -302,21 +410,19 @@ function DraggableBracelet({
         alt={name}
         data-overlay="true"
         draggable={false}
-        onLoad={() => setLoaded(true)}
         style={{
           width: "100%", height: "100%",
           objectFit: "contain",
           pointerEvents: "none",
-          WebkitUserSelect: "none",
-          userSelect: "none",
+          WebkitUserSelect: "none", userSelect: "none",
         }}
       />
-    </motion.div>
+    </div>
   );
 }
 
 /* ═══════════════════════════════════════════
-   Capture snapshot (composites video + overlay PNG)
+   Capture snapshot (composites video + overlay)
    ═══════════════════════════════════════════ */
 async function captureSnapshot(container: HTMLDivElement, video: HTMLVideoElement) {
   const canvas = document.createElement("canvas");
@@ -325,44 +431,48 @@ async function captureSnapshot(container: HTMLDivElement, video: HTMLVideoElemen
   canvas.width = w; canvas.height = h;
   const ctx = canvas.getContext("2d")!;
 
-  // Match the CSS object-fit: cover behaviour of the <video> element
   const cRect = container.getBoundingClientRect();
   const videoAspect = w / h;
   const containerAspect = cRect.width / cRect.height;
   let drawW = w, drawH = h, drawX = 0, drawY = 0;
   if (videoAspect > containerAspect) {
-    // video is wider than container — crop horizontally
     drawW = h * containerAspect;
     drawX = (w - drawW) / 2;
   } else {
     drawH = w / containerAspect;
     drawY = (h - drawH) / 2;
   }
-  // First draw a black backdrop, then the cropped video
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, w, h);
-  // Re-scale so the cropped video fills the entire canvas
-  const sx = w / cRect.width;
-  const sy = h / cRect.height;
-  // Draw video to fill output canvas (we'll draw it stretched then overlay items also stretched)
   ctx.drawImage(video, drawX, drawY, drawW, drawH, 0, 0, w, h);
 
-  // Overlay images (transparent PNGs) — copy each at its bounding-rect position
-  const overlayImgs = container.querySelectorAll<HTMLImageElement>("img[data-overlay]");
-  for (const img of overlayImgs) {
-    const rect = img.getBoundingClientRect();
+  const sx = w / cRect.width;
+  const sy = h / cRect.height;
+
+  // Composite each overlay <img> at its current bounding rect (with rotation)
+  const overlays = container.querySelectorAll<HTMLImageElement>("img[data-overlay]");
+  for (const img of overlays) {
+    const wrap = img.parentElement as HTMLElement | null;
+    if (!wrap) continue;
+    const rect = wrap.getBoundingClientRect();
+    const cx = (rect.left + rect.width / 2 - cRect.left) * sx;
+    const cy = (rect.top + rect.height / 2 - cRect.top) * sy;
+    // Read rotation from the wrapper's transform matrix
+    const tr = getComputedStyle(wrap).transform;
+    let rotation = 0;
+    if (tr && tr.startsWith("matrix(")) {
+      const m = tr.slice(7, -1).split(",").map(Number);
+      rotation = Math.atan2(m[1], m[0]);
+    }
+    const drawWp = rect.width * sx;
+    const drawHp = rect.height * sy;
     ctx.save();
-    // Apply soft shadow on the snapshot too
-    ctx.shadowColor = "rgba(0,0,0,0.38)";
-    ctx.shadowBlur = 22 * sx;
-    ctx.shadowOffsetY = 14 * sy;
-    ctx.drawImage(
-      img,
-      (rect.left - cRect.left) * sx,
-      (rect.top - cRect.top) * sy,
-      rect.width * sx,
-      rect.height * sy,
-    );
+    ctx.translate(cx, cy);
+    ctx.rotate(rotation);
+    ctx.shadowColor = "rgba(0,0,0,0.45)";
+    ctx.shadowBlur = 10 * sx;
+    ctx.shadowOffsetY = 6 * sy;
+    ctx.drawImage(img, -drawWp / 2, -drawHp / 2, drawWp, drawHp);
     ctx.restore();
   }
 
@@ -372,13 +482,8 @@ async function captureSnapshot(container: HTMLDivElement, video: HTMLVideoElemen
 /* ═══════════════════════════════════════════
    Bottom card — WRIST SIZE + MATERIAL panes
    ═══════════════════════════════════════════ */
-function BottomCard({
-  sizes, material,
-}: {
-  sizes: string[]; material: string;
-}) {
+function BottomCard({ sizes, material }: { sizes: string[]; material: string }) {
   const [activeTab, setActiveTab] = useState<"wrist" | "material" | null>(null);
-
   return (
     <div style={{
       position: "absolute", bottom: 0, left: 0, right: 0, zIndex: 30,
@@ -399,8 +504,7 @@ function BottomCard({
         >
           <svg width="28" height="24" viewBox="0 0 28 24" fill="none"
             stroke={activeTab === "wrist" ? "#1D3A61" : "#0c0f14"}
-            strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
-            style={{ transition: "stroke 0.2s ease" }}>
+            strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M5 22 L5 14 Q5 8 14 8 Q23 8 23 14 L23 22" />
             <path d="M8 8 Q7 4 9.5 2.5 Q12 1 13.5 3 Q14.5 4.5 14 7" />
             <path d="M14 7 Q13.5 3 16 2 Q18.5 1 19.5 3 Q20 4.5 19 7" />
@@ -428,8 +532,7 @@ function BottomCard({
         >
           <svg width="26" height="24" viewBox="0 0 26 24" fill="none"
             stroke={activeTab === "material" ? "#1D3A61" : "#0c0f14"}
-            strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
-            style={{ transition: "stroke 0.2s ease" }}>
+            strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
             <rect x="3" y="3" width="20" height="18" rx="2" />
             <line x1="6" y1="20" x2="20" y2="6" opacity="0.6" />
             <line x1="10" y1="20" x2="20" y2="10" opacity="0.6" />
@@ -485,7 +588,6 @@ function BottomCard({
           </motion.div>
         )}
       </AnimatePresence>
-
       <div style={{ height: "env(safe-area-inset-bottom, 12px)" }} />
     </div>
   );
@@ -500,19 +602,24 @@ export default function TryOnPage() {
   const id = Number(params.id);
   const product = getProductById(id);
 
-  const [facingMode] = useState<"user" | "environment">("environment");
-  const [showHint, setShowHint] = useState(true);
+  const [facingMode, setFacingMode] = useState<"user" | "environment">("environment");
   const [capturing, setCapturing] = useState(false);
   const [flash, setFlash] = useState(false);
+  const [modelLoading, setModelLoading] = useState(true);
   const containerRef = useRef<HTMLDivElement>(null);
   const { videoRef, ready, denied } = useCamera(facingMode);
 
-  // Auto-hide hint 4s after camera is ready, or on first interaction
+  // Selfie cam (user-facing) is mirrored via CSS — flip x for landmark mapping
+  const mirrored = facingMode === "user";
+  const { pose, tracking } = useHandTracking(videoRef, ready, mirrored);
+
+  // Mark hand-landmarker model loaded once we get the first detection or after 4s
   useEffect(() => {
     if (!ready) return;
-    const t = setTimeout(() => setShowHint(false), 4000);
+    if (tracking) { setModelLoading(false); return; }
+    const t = setTimeout(() => setModelLoading(false), 4000);
     return () => clearTimeout(t);
-  }, [ready]);
+  }, [ready, tracking]);
 
   useEffect(() => {
     const orientation = (screen as unknown as { orientation?: { lock?: (t: string) => Promise<void> } }).orientation;
@@ -553,19 +660,33 @@ export default function TryOnPage() {
   }
 
   const overlaySrc = product.tryOnImage ?? product.images[0];
+  const showLoading = !ready || modelLoading;
 
   return (
     <div ref={containerRef} style={{ position: "fixed", inset: 0, background: "#000", overflow: "hidden" }}>
 
       {/* ── Camera feed ── */}
-      <video ref={videoRef} playsInline muted style={{
-        position: "absolute", inset: 0, width: "100%", height: "100%",
-        objectFit: "cover", opacity: ready ? 1 : 0, transition: "opacity 0.7s ease",
-      }} />
+      <video
+        ref={videoRef}
+        playsInline
+        muted
+        style={{
+          position: "absolute", inset: 0, width: "100%", height: "100%",
+          objectFit: "cover",
+          opacity: ready ? 1 : 0,
+          transition: "opacity 0.7s ease",
+          transform: mirrored ? "scaleX(-1)" : "none",
+        }}
+      />
 
       {/* ── Loading screen ── */}
       <AnimatePresence>
-        {!ready && !denied && <LoadingScreen productName={product.name} />}
+        {showLoading && !denied && (
+          <LoadingScreen
+            productName={product.name}
+            sub={!ready ? "Loading camera..." : "Calibrating wrist tracking..."}
+          />
+        )}
       </AnimatePresence>
 
       {/* ── Camera denied ── */}
@@ -590,18 +711,18 @@ export default function TryOnPage() {
         )}
       </AnimatePresence>
 
-      {/* ── Bracelet overlay (transparent PNG, draggable + pinch-scale) ── */}
+      {/* ── Bracelet overlay (auto-positioned by hand tracking) ── */}
       {ready && (
-        <DraggableBracelet
+        <TrackedBracelet
           src={overlaySrc}
           name={product.name}
-          containerRef={containerRef}
-          onInteract={() => setShowHint(false)}
+          pose={pose}
+          visible={tracking || pose !== null}
         />
       )}
 
-      {/* ── Gesture hint pill ── */}
-      {ready && <GestureHint visible={showHint} />}
+      {/* ── Tracking status pill ── */}
+      {ready && !showLoading && <TrackingStatus tracking={tracking} />}
 
       {/* ── Flash feedback ── */}
       <AnimatePresence>
@@ -611,7 +732,7 @@ export default function TryOnPage() {
         )}
       </AnimatePresence>
 
-      {/* ── Top bar — product name (centered) + close (right) ── */}
+      {/* ── Top bar — product name (centered) + close (right) + flip cam (left) ── */}
       <div style={{
         position: "absolute", top: 0, left: 0, right: 0, zIndex: 30,
         padding: "calc(env(safe-area-inset-top, 14px) + 14px) 18px 18px",
@@ -623,11 +744,33 @@ export default function TryOnPage() {
           fontSize: 13, fontWeight: 600,
           letterSpacing: "0.16em", textTransform: "uppercase",
           color: "#0c0f14", margin: 0, textAlign: "center",
-          maxWidth: "75%", lineHeight: 1.35,
-          textShadow: "0 1px 12px rgba(255,255,255,0.4)",
+          maxWidth: "70%", lineHeight: 1.35,
+          textShadow: "0 1px 12px rgba(255,255,255,0.45)",
         }}>
           {product.name}
         </p>
+
+        <button
+          onClick={() => setFacingMode((m) => (m === "environment" ? "user" : "environment"))}
+          aria-label="Flip camera"
+          style={{
+            position: "absolute",
+            top: "calc(env(safe-area-inset-top, 14px) + 10px)",
+            left: 16,
+            width: 38, height: 38, borderRadius: "50%",
+            background: "rgba(255,255,255,0.92)",
+            border: "none", color: "#0c0f14", cursor: "pointer",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            boxShadow: "0 2px 10px rgba(0,0,0,0.18)",
+            pointerEvents: "auto",
+          }}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M1 4v6h6" /><path d="M23 20v-6h-6" />
+            <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10" />
+            <path d="M3.51 15a9 9 0 0 0 14.85 3.36L23 14" />
+          </svg>
+        </button>
 
         <button onClick={() => router.back()} aria-label="Close" style={{
           position: "absolute",
@@ -675,12 +818,7 @@ export default function TryOnPage() {
       )}
 
       {/* ── Bottom card ── */}
-      {ready && (
-        <BottomCard
-          sizes={product.sizes ?? []}
-          material={product.material}
-        />
-      )}
+      {ready && <BottomCard sizes={product.sizes ?? []} material={product.material} />}
     </div>
   );
 }
