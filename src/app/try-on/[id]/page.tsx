@@ -4,7 +4,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { getProductById } from "@/data/products";
-import type { HandLandmarker as HandLandmarkerType } from "@mediapipe/tasks-vision";
+import type { HandLandmarker as HandLandmarkerType, ImageSegmenter as ImageSegmenterType } from "@mediapipe/tasks-vision";
 
 const EASE = [0.16, 1, 0.3, 1] as const;
 
@@ -381,92 +381,245 @@ function TrackingStatus({ tracking }: { tracking: boolean }) {
 /* ═══════════════════════════════════════════
    Bracelet overlay — auto-positioned by tracking
    ═══════════════════════════════════════════ */
-function TrackedBracelet({
-  src, name, pose, visible,
+/* ═══════════════════════════════════════════
+   Canvas compositor — draws bangle, then composites
+   the segmented person on top within the bangle bbox.
+   This produces the wrap-around effect: the arm
+   appears IN FRONT of the back half of the bangle.
+   ═══════════════════════════════════════════ */
+function BangleCompositor({
+  videoRef, pose, tracking, bangleSrc, mirrored,
 }: {
-  src: string; name: string;
+  videoRef: React.RefObject<HTMLVideoElement | null>;
   pose: WristPose | null;
-  visible: boolean;
+  tracking: boolean;
+  bangleSrc: string;
+  mirrored: boolean;
 }) {
-  const [imgFailed, setImgFailed] = useState(false);
-  if (!pose) return null;
-  // Asset is a 500x500 square PNG of the bangle in 3D perspective.
-  // The bangle fills ~78% of the width; size the wrapper so pose.width
-  // corresponds to the actual bracelet width, not the transparent padding.
-  const ASSET_FILL = 0.78;
-  // Bump the rendered size — 1.55× palm width was too small to read on screen.
-  const SIZE_BOOST = 1.55;
-  const wrapperW = (pose.width / ASSET_FILL) * SIZE_BOOST;
-  // Square asset → square wrapper. The bangle's vertical extent is shorter
-  // than its horizontal, but `object-fit: contain` keeps it correctly placed.
-  const wrapperH = wrapperW;
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const segmenterRef = useRef<ImageSegmenterType | null>(null);
+  const bangleImgRef = useRef<HTMLImageElement | null>(null);
+  // Off-screen canvas for the (small) alpha mask at MediaPipe mask resolution
+  const maskCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  // Off-screen canvas for the video-resolution masked-person composite
+  const videoMaskedRef = useRef<HTMLCanvasElement | null>(null);
+  // Smoothed pose to avoid stutter on dropped frames
+  const poseRef = useRef<WristPose | null>(null);
+  const trackingRef = useRef<boolean>(false);
+
+  // Keep latest pose/tracking visible to the RAF loop without restarting it
+  useEffect(() => { poseRef.current = pose; }, [pose]);
+  useEffect(() => { trackingRef.current = tracking; }, [tracking]);
+
+  // Load bangle PNG once
+  useEffect(() => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => { bangleImgRef.current = img; };
+    img.onerror = () => { console.error("[compositor] bangle PNG failed:", bangleSrc); };
+    img.src = bangleSrc;
+  }, [bangleSrc]);
+
+  // Init ImageSegmenter (selfie model) once
+  useEffect(() => {
+    let cancelled = false;
+    async function init() {
+      try {
+        const mp = await import("@mediapipe/tasks-vision");
+        const vision = await mp.FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm",
+        );
+        const make = async (delegate: "GPU" | "CPU") =>
+          mp.ImageSegmenter.createFromOptions(vision, {
+            baseOptions: {
+              modelAssetPath:
+                "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.tflite",
+              delegate,
+            },
+            runningMode: "VIDEO",
+            outputCategoryMask: true,
+            outputConfidenceMasks: false,
+          });
+        let segmenter: ImageSegmenterType;
+        try { segmenter = await make("GPU"); }
+        catch { segmenter = await make("CPU"); }
+        if (cancelled) { segmenter.close(); return; }
+        segmenterRef.current = segmenter;
+      } catch (err) {
+        console.error("[compositor] segmenter init failed", err);
+      }
+    }
+    init();
+    return () => { cancelled = true; segmenterRef.current?.close(); segmenterRef.current = null; };
+  }, []);
+
+  // Main RAF render loop
+  useEffect(() => {
+    let raf = 0;
+    let lastT = 0;
+
+    function tick() {
+      raf = requestAnimationFrame(tick);
+      const canvas = canvasRef.current;
+      const video = videoRef.current;
+      if (!canvas || !video) return;
+      if (video.readyState < 2) return;
+
+      // Throttle to ~30 fps
+      const now = performance.now();
+      if (now - lastT < 33) return;
+      lastT = now;
+
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      // Match canvas internal resolution to viewport
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const cw = Math.floor(vw * dpr);
+      const ch = Math.floor(vh * dpr);
+      if (canvas.width !== cw || canvas.height !== ch) {
+        canvas.width = cw;
+        canvas.height = ch;
+      }
+      ctx.clearRect(0, 0, cw, ch);
+
+      const p = poseRef.current;
+      const bangle = bangleImgRef.current;
+      if (!p || !bangle) return;
+
+      // Convert pose (viewport px) to canvas px
+      const sx = cw / vw;
+      const sy = ch / vh;
+      const ASSET_FILL = 0.78;
+      const SIZE_BOOST = 1.55;
+      const wrapperW = (p.width / ASSET_FILL) * SIZE_BOOST;
+      const wrapperH = wrapperW;
+      const wW = wrapperW * sx;
+      const wH = wrapperH * sy;
+      const cx = p.x * sx;
+      const cy = p.y * sy;
+
+      // ── 1. Draw bangle PNG at pose ──
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate((p.rotation * Math.PI) / 180);
+      ctx.shadowColor = "rgba(0,0,0,0.45)";
+      ctx.shadowBlur = 10 * sx;
+      ctx.shadowOffsetY = 6 * sy;
+      ctx.drawImage(bangle, -wW / 2, -wH / 2, wW, wH);
+      ctx.restore();
+
+      // ── 2. Composite segmented person on top within bangle bbox ──
+      const segmenter = segmenterRef.current;
+      if (!segmenter) return;
+
+      let segResult: ReturnType<ImageSegmenterType["segmentForVideo"]>;
+      try { segResult = segmenter.segmentForVideo(video, now); } catch { return; }
+      const catMask = segResult?.categoryMask;
+      if (!catMask) return;
+
+      const maskW = catMask.width;
+      const maskH = catMask.height;
+      const maskData = catMask.getAsUint8Array();
+
+      // Build a small alpha-only canvas at MASK resolution (typically 256×256),
+      // then use canvas compositing to apply it — far faster than per-pixel JS.
+      let alphaMask = (maskCanvasRef as React.MutableRefObject<HTMLCanvasElement | null>).current;
+      if (!alphaMask) {
+        alphaMask = document.createElement("canvas");
+        maskCanvasRef.current = alphaMask;
+      }
+      if (alphaMask.width !== maskW || alphaMask.height !== maskH) {
+        alphaMask.width = maskW;
+        alphaMask.height = maskH;
+      }
+      const actx = alphaMask.getContext("2d");
+      if (!actx) { catMask.close(); return; }
+      const aImg = actx.createImageData(maskW, maskH);
+      const aPx = aImg.data;
+      for (let i = 0; i < maskData.length; i++) {
+        // selfie_segmenter: category 0 = background, !=0 = person.
+        // Write alpha 255 for person, 0 for background.
+        const v = maskData[i] === 0 ? 0 : 255;
+        const o = i * 4;
+        aPx[o] = 255; aPx[o + 1] = 255; aPx[o + 2] = 255; aPx[o + 3] = v;
+      }
+      actx.putImageData(aImg, 0, 0);
+      catMask.close();
+
+      // Composite video frame × mask onto a video-sized working canvas.
+      // (Allocated lazily on a different ref to avoid the per-pixel loop.)
+      const vidW = video.videoWidth;
+      const vidH = video.videoHeight;
+      const masked = (() => {
+        const c = (videoMaskedRef.current ||= document.createElement("canvas"));
+        if (c.width !== vidW || c.height !== vidH) { c.width = vidW; c.height = vidH; }
+        return c;
+      })();
+      const mctx = masked.getContext("2d");
+      if (!mctx) return;
+      mctx.globalCompositeOperation = "source-over";
+      mctx.clearRect(0, 0, vidW, vidH);
+      mctx.drawImage(video, 0, 0, vidW, vidH);
+      mctx.globalCompositeOperation = "destination-in";
+      mctx.drawImage(alphaMask, 0, 0, vidW, vidH);
+      mctx.globalCompositeOperation = "source-over";
+
+      // Now blit the masked person on top of the bangle, clipped to the
+      // bangle bbox, mapping video coords → canvas coords (honour cover crop + mirror)
+      const cRect = { width: vw, height: vh };
+      const videoAspect = vidW / vidH;
+      const dispAspect = cRect.width / cRect.height;
+      let scaleFit: number, cropX = 0, cropY = 0;
+      if (videoAspect > dispAspect) {
+        scaleFit = cRect.height / vidH;
+        cropX = (vidW * scaleFit - cRect.width) / 2;
+      } else {
+        scaleFit = cRect.width / vidW;
+        cropY = (vidH * scaleFit - cRect.height) / 2;
+      }
+      const dW = vidW * scaleFit * sx;
+      const dH = vidH * scaleFit * sy;
+      const dX = -cropX * sx;
+      const dY = -cropY * sy;
+
+      ctx.save();
+      // Clip to bangle bbox so we ONLY occlude within the bracelet area
+      ctx.translate(cx, cy);
+      ctx.rotate((p.rotation * Math.PI) / 180);
+      ctx.beginPath();
+      ctx.rect(-wW / 2, -wH / 2, wW, wH);
+      ctx.clip();
+      ctx.rotate(-(p.rotation * Math.PI) / 180);
+      ctx.translate(-cx, -cy);
+      if (mirrored) {
+        // Flip the masked person horizontally to match the mirrored video
+        ctx.translate(cw, 0);
+        ctx.scale(-1, 1);
+      }
+      ctx.drawImage(masked, dX, dY, dW, dH);
+      ctx.restore();
+    }
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [videoRef, mirrored]);
 
   return (
-    <div
+    <canvas
+      ref={canvasRef}
       style={{
         position: "absolute",
-        left: pose.x - wrapperW / 2,
-        top: pose.y - wrapperH / 2,
-        width: wrapperW,
-        height: wrapperH,
-        transform: `rotate(${pose.rotation}deg)`,
-        transformOrigin: "center center",
-        zIndex: 10,
+        inset: 0,
+        width: "100%",
+        height: "100%",
         pointerEvents: "none",
-        opacity: visible ? 1 : 0,
+        zIndex: 10,
+        opacity: tracking || pose !== null ? 1 : 0,
         transition: "opacity 0.45s ease",
-        // Soft contact shadow so the bracelet feels grounded on the wrist
-        filter:
-          "drop-shadow(0 6px 10px rgba(0,0,0,0.45)) drop-shadow(0 1px 3px rgba(0,0,0,0.35))",
-        willChange: "transform, left, top, width, height",
       }}
-    >
-      {!imgFailed ? (
-        /* eslint-disable-next-line @next/next/no-img-element */
-        <img
-          src={src}
-          alt={name}
-          data-overlay="true"
-          draggable={false}
-          onError={() => {
-            console.error("[tryon] overlay image failed to load:", src);
-            setImgFailed(true);
-          }}
-          style={{
-            width: "100%", height: "100%",
-            objectFit: "contain",
-            pointerEvents: "none",
-            WebkitUserSelect: "none", userSelect: "none",
-          }}
-        />
-      ) : (
-        /* Fallback bracelet — drawn as a gold ring so the user sees SOMETHING
-           even if the PNG asset 404s. Width/height match the wrapper. */
-        <svg
-          viewBox="0 0 200 200"
-          width="100%"
-          height="100%"
-          style={{ display: "block" }}
-        >
-          <defs>
-            <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0%" stopColor="#E8C97A" />
-              <stop offset="50%" stopColor="#B8965A" />
-              <stop offset="100%" stopColor="#8C6A33" />
-            </linearGradient>
-          </defs>
-          <ellipse
-            cx="100" cy="100" rx="78" ry="32"
-            fill="none" stroke="url(#gold)" strokeWidth="14"
-          />
-          <ellipse
-            cx="100" cy="100" rx="78" ry="32"
-            fill="none" stroke="rgba(255,255,255,0.55)" strokeWidth="2"
-            strokeDasharray="3 6"
-          />
-        </svg>
-      )}
-    </div>
+    />
   );
 }
 
@@ -474,6 +627,18 @@ function TrackedBracelet({
    Capture snapshot (composites video + overlay)
    ═══════════════════════════════════════════ */
 async function captureSnapshot(container: HTMLDivElement, video: HTMLVideoElement) {
+  // Prefer the live compositor canvas — it already contains video + bangle + mask
+  const live = container.querySelector("canvas") as HTMLCanvasElement | null;
+  if (live && live.width > 0 && live.height > 0) {
+    const out = document.createElement("canvas");
+    out.width = live.width;
+    out.height = live.height;
+    const c = out.getContext("2d")!;
+    c.drawImage(live, 0, 0);
+    return out;
+  }
+
+  // Fallback (compositor canvas unavailable) — re-compose from video + DOM overlays
   const canvas = document.createElement("canvas");
   const w = video.videoWidth || container.clientWidth;
   const h = video.videoHeight || container.clientHeight;
@@ -953,13 +1118,14 @@ export default function TryOnPage() {
         )}
       </AnimatePresence>
 
-      {/* ── Bracelet overlay (auto-positioned by hand tracking) ── */}
+      {/* ── Wrap-around bangle (canvas compositor: bangle + segmented person) ── */}
       {ready && (
-        <TrackedBracelet
-          src={overlaySrc}
-          name={product.name}
+        <BangleCompositor
+          videoRef={videoRef}
           pose={pose}
-          visible={tracking || pose !== null}
+          tracking={tracking}
+          bangleSrc={overlaySrc}
+          mirrored={mirrored}
         />
       )}
 
