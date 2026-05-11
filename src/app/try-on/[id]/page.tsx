@@ -1,10 +1,15 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import dynamic from "next/dynamic";
 import { getProductById } from "@/data/products";
 import type { HandLandmarker as HandLandmarkerType, ImageSegmenter as ImageSegmenterType } from "@mediapipe/tasks-vision";
+import type { WristPose3D } from "./BangleScene3D";
+
+// R3F + drei are heavy; load only on the client.
+const BangleScene3D = dynamic(() => import("./BangleScene3D"), { ssr: false });
 
 const EASE = [0.16, 1, 0.3, 1] as const;
 
@@ -1059,6 +1064,19 @@ export default function TryOnPage() {
   const mirrored = facingMode === "user";
   const { pose, tracking, initError, modelReady } = useHandTracking(videoRef, ready, mirrored);
 
+  // poseRef is a mutable ref handed to the 3D scene so it can read the latest
+  // pose every frame without restarting the R3F render loop on every change.
+  const poseRef = useRef<WristPose3D | null>(null);
+  useEffect(() => { poseRef.current = pose; }, [pose]);
+  const [modelLoaded, setModelLoaded] = useState(false);
+  const handleModelLoaded = useMemo(() => () => setModelLoaded(true), []);
+  // Hard ceiling — never block the camera view on the GLB for more than 5 s.
+  useEffect(() => {
+    if (modelLoaded) return;
+    const t = setTimeout(() => setModelLoaded(true), 5000);
+    return () => clearTimeout(t);
+  }, [modelLoaded]);
+
   // Loading screen hides once the MediaPipe model is initialised (or after a hard 6s ceiling)
   useEffect(() => {
     if (!ready) return;
@@ -1114,7 +1132,9 @@ export default function TryOnPage() {
   }
 
   const overlaySrc = product.tryOnImage ?? product.images[0];
-  const showLoading = !ready || modelLoading;
+  // Wait for the GLB on products that use it; max ~3 s extra grace
+  const needsModel = !!product.tryOnModel;
+  const showLoading = !ready || modelLoading || (needsModel && !modelLoaded);
 
   return (
     <div ref={containerRef} style={{ position: "fixed", inset: 0, background: "#000", overflow: "hidden" }}>
@@ -1188,8 +1208,16 @@ export default function TryOnPage() {
         )}
       </AnimatePresence>
 
-      {/* ── Wrap-around bangle (canvas compositor: bangle + segmented person) ── */}
-      {ready && (
+      {/* ── 3D bracelet (preferred) ── */}
+      {ready && product.tryOnModel && (
+        <BangleScene3D
+          modelUrl={product.tryOnModel}
+          poseRef={poseRef}
+          onModelLoaded={handleModelLoaded}
+        />
+      )}
+      {/* ── 2D compositor fallback (used when no GLB exists for this product) ── */}
+      {ready && !product.tryOnModel && (
         <BangleCompositor
           videoRef={videoRef}
           pose={pose}

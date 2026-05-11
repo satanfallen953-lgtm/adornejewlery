@@ -16,8 +16,10 @@ export interface Product {
   details: string[];
   specifications: ProductSpec[];
   images: string[];
-  /** Transparent PNG for the AR try-on overlay */
+  /** Transparent PNG for the AR try-on overlay (legacy 2D fallback) */
   tryOnImage?: string;
+  /** GLB 3D model path for the AR try-on (preferred when available) */
+  tryOnModel?: string;
   sizes?: string[];
   isNew: boolean;
 }
@@ -270,6 +272,7 @@ export const PRODUCTS: Product[] = [
       "/category%20products%20images/Italian%20Customized%20Charms%20Bracelet%20model.jpg",
     ],
     tryOnImage: "/products/ItalianBracelet-perspective.png",
+    tryOnModel: "/products/italian-bracelet.glb",
     sizes: ["17 cm", "19 cm", "21 cm"],
     isNew: false,
   },
@@ -306,6 +309,7 @@ export const PRODUCTS: Product[] = [
       "/category%20products%20images/Italian%20Customized%20Charms%20Bracelet%20(Gold)%20model.jpg",
     ],
     tryOnImage: "/products/ItalianBracelet-perspective.png",
+    tryOnModel: "/products/italian-bracelet.glb",
     isNew: false,
   },
   {

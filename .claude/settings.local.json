@@ -37,7 +37,10 @@
       "Bash(git commit -m ' *)",
       "Read(//d/user/Desktop/adornejewlery/**)",
       "Bash(vercel deploy *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(cp \"D:/user/Downloads/object_0 \\(7\\).glb\" \"D:/user/Desktop/adornejewlery/public/products/italian-bracelet.glb\" && ls -la \"D:/user/Desktop/adornejewlery/public/products/italian-bracelet.glb\")",
+      "Bash(cp \"D:/user/Desktop/adornejewlery/public/products/italian-bracelet.glb\" \"public/products/italian-bracelet.glb\")",
+      "Bash(ls public/products/italian-bracelet.glb)"
     ]
   }
 }
