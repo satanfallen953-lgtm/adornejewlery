@@ -36,7 +36,8 @@
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
       "Read(//d/user/Desktop/adornejewlery/**)",
-      "Bash(vercel deploy *)"
+      "Bash(vercel deploy *)",
+      "Bash(git push *)"
     ]
   }
 }

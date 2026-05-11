@@ -73,6 +73,8 @@ function useHandTracking(
 ) {
   const [pose, setPose] = useState<WristPose | null>(null);
   const [tracking, setTracking] = useState(false);
+  const [initError, setInitError] = useState<string | null>(null);
+  const [modelReady, setModelReady] = useState(false);
   const landmarkerRef = useRef<HandLandmarkerType | null>(null);
   const rafRef = useRef<number | null>(null);
   const lastDetectMsRef = useRef<number>(0);
@@ -81,34 +83,45 @@ function useHandTracking(
     if (!ready || !videoRef.current) return;
     let cancelled = false;
 
+    async function createLandmarker(delegate: "GPU" | "CPU") {
+      const mp = await import("@mediapipe/tasks-vision");
+      const vision = await mp.FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm",
+      );
+      return mp.HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+          delegate,
+        },
+        runningMode: "VIDEO",
+        numHands: 1,
+        minHandDetectionConfidence: 0.5,
+        minHandPresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+    }
+
     async function init() {
+      let landmarker: HandLandmarkerType | null = null;
       try {
-        // Lazy-import so the wasm only loads when we actually need it
-        const mp = await import("@mediapipe/tasks-vision");
-        const vision = await mp.FilesetResolver.forVisionTasks(
-          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm",
-        );
-        if (cancelled) return;
-        const landmarker = await mp.HandLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath:
-              "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-            delegate: "GPU",
-          },
-          runningMode: "VIDEO",
-          numHands: 1,
-          minHandDetectionConfidence: 0.5,
-          minHandPresenceConfidence: 0.5,
-          minTrackingConfidence: 0.5,
-        });
+        // Try GPU first, fall back to CPU if it throws (common on some Androids/iOS Safari)
+        try {
+          landmarker = await createLandmarker("GPU");
+        } catch (gpuErr) {
+          console.warn("[hand-tracking] GPU delegate failed, retrying with CPU", gpuErr);
+          landmarker = await createLandmarker("CPU");
+        }
         if (cancelled) {
           landmarker.close();
           return;
         }
         landmarkerRef.current = landmarker;
+        setModelReady(true);
         loop();
       } catch (err) {
         console.error("[hand-tracking] init failed", err);
+        setInitError(err instanceof Error ? err.message : String(err));
       }
     }
 
@@ -235,7 +248,7 @@ function useHandTracking(
     };
   }, [ready, videoRef, mirrored]);
 
-  return { pose, tracking };
+  return { pose, tracking, initError, modelReady };
 }
 
 /* ═══════════════════════════════════════════
@@ -764,7 +777,8 @@ export default function TryOnPage() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  const [facingMode, setFacingMode] = useState<"user" | "environment">("environment");
+  // Default to FRONT camera — easier to hold up your own wrist than aiming the rear cam at yourself.
+  const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
   const [capturing, setCapturing] = useState(false);
   const [flash, setFlash] = useState(false);
   const [modelLoading, setModelLoading] = useState(true);
@@ -773,15 +787,15 @@ export default function TryOnPage() {
 
   // Selfie cam (user-facing) is mirrored via CSS — flip x for landmark mapping
   const mirrored = facingMode === "user";
-  const { pose, tracking } = useHandTracking(videoRef, ready, mirrored);
+  const { pose, tracking, initError, modelReady } = useHandTracking(videoRef, ready, mirrored);
 
-  // Mark hand-landmarker model loaded once we get the first detection or after 4s
+  // Loading screen hides once the MediaPipe model is initialised (or after a hard 6s ceiling)
   useEffect(() => {
     if (!ready) return;
-    if (tracking) { setModelLoading(false); return; }
-    const t = setTimeout(() => setModelLoading(false), 4000);
+    if (modelReady) { setModelLoading(false); return; }
+    const t = setTimeout(() => setModelLoading(false), 6000);
     return () => clearTimeout(t);
-  }, [ready, tracking]);
+  }, [ready, modelReady]);
 
   useEffect(() => {
     const orientation = (screen as unknown as { orientation?: { lock?: (t: string) => Promise<void> } }).orientation;
@@ -877,6 +891,29 @@ export default function TryOnPage() {
               fontFamily: "var(--font-inter,sans-serif)", fontSize: 9,
               letterSpacing: "0.22em", textTransform: "uppercase",
             }}>Retry</button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Tracking init error (MediaPipe failed to load) ── */}
+      <AnimatePresence>
+        {initError && (
+          <motion.div key="track-err" initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+            style={{
+              position: "absolute", left: 12, right: 12,
+              top: "calc(env(safe-area-inset-top, 14px) + 110px)",
+              padding: "10px 14px", borderRadius: 12, zIndex: 45,
+              background: "rgba(220,53,69,0.92)", color: "#fff",
+              fontFamily: "var(--font-inter,sans-serif)", fontSize: 11,
+              letterSpacing: "0.04em", lineHeight: 1.5,
+              boxShadow: "0 4px 14px rgba(0,0,0,0.25)",
+            }}>
+            <strong style={{ letterSpacing: "0.16em", textTransform: "uppercase", fontSize: 9 }}>
+              Tracking unavailable
+            </strong>
+            <div style={{ marginTop: 4, opacity: 0.92 }}>
+              The hand-tracking model couldn&apos;t load. Check your connection and reload.
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
