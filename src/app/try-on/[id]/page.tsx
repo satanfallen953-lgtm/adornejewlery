@@ -411,12 +411,26 @@ function BangleCompositor({
   useEffect(() => { poseRef.current = pose; }, [pose]);
   useEffect(() => { trackingRef.current = tracking; }, [tracking]);
 
+  // Bangle image load state — used both by the renderer and the debug HUD
+  const [bangleLoaded, setBangleLoaded] = useState(false);
+  const [bangleError, setBangleError] = useState<string | null>(null);
+
   // Load bangle PNG once
   useEffect(() => {
+    setBangleLoaded(false);
+    setBangleError(null);
     const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => { bangleImgRef.current = img; };
-    img.onerror = () => { console.error("[compositor] bangle PNG failed:", bangleSrc); };
+    // NOTE: do NOT set crossOrigin — the asset is same-origin and that flag
+    // can cause silent CORS-style decode failures on some hosts.
+    img.onload = () => {
+      bangleImgRef.current = img;
+      setBangleLoaded(true);
+      console.log("[compositor] bangle loaded", img.naturalWidth, "×", img.naturalHeight, bangleSrc);
+    };
+    img.onerror = (e) => {
+      console.error("[compositor] bangle PNG failed:", bangleSrc, e);
+      setBangleError(`Failed to load: ${bangleSrc}`);
+    };
     img.src = bangleSrc;
   }, [bangleSrc]);
 
@@ -487,7 +501,13 @@ function BangleCompositor({
 
       const p = poseRef.current;
       const bangle = bangleImgRef.current;
-      if (!p || !bangle) return;
+
+      // Debug heartbeat — top-left red square so we KNOW the canvas is alive.
+      // (Removed once everything's confirmed working.)
+      ctx.fillStyle = "rgba(255,0,0,0.85)";
+      ctx.fillRect(8, 8, 18, 18);
+
+      if (!p) return;
 
       // Convert pose (viewport px) to canvas px
       const sx = cw / vw;
@@ -501,14 +521,42 @@ function BangleCompositor({
       const cx = p.x * sx;
       const cy = p.y * sy;
 
-      // ── 1. Draw bangle PNG at pose ──
+      // ── 1. Draw bangle at pose ──
       ctx.save();
       ctx.translate(cx, cy);
       ctx.rotate((p.rotation * Math.PI) / 180);
       ctx.shadowColor = "rgba(0,0,0,0.45)";
       ctx.shadowBlur = 10 * sx;
       ctx.shadowOffsetY = 6 * sy;
-      ctx.drawImage(bangle, -wW / 2, -wH / 2, wW, wH);
+      if (bangle && bangle.naturalWidth > 0) {
+        ctx.drawImage(bangle, -wW / 2, -wH / 2, wW, wH);
+      } else {
+        // Fallback gold bangle — drawn directly on canvas so the user
+        // ALWAYS sees a bracelet, even if the PNG asset 404s or stalls.
+        const gradient = ctx.createLinearGradient(-wW / 2, -wH / 4, wW / 2, wH / 4);
+        gradient.addColorStop(0, "#E8C97A");
+        gradient.addColorStop(0.5, "#D4AF6A");
+        gradient.addColorStop(1, "#8C6A33");
+        ctx.lineWidth = wH * 0.10;
+        ctx.strokeStyle = gradient;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, wW * 0.42, wH * 0.18, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        // Inner highlight
+        ctx.lineWidth = wH * 0.025;
+        ctx.strokeStyle = "rgba(255,240,210,0.7)";
+        ctx.beginPath();
+        ctx.ellipse(0, -wH * 0.005, wW * 0.42, wH * 0.18, 0, Math.PI, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      // Debug crosshair at pose center — bright green so it's obviously visible.
+      ctx.save();
+      ctx.fillStyle = "rgba(0,255,80,0.95)";
+      ctx.beginPath();
+      ctx.arc(cx, cy, 6 * sx, 0, Math.PI * 2);
+      ctx.fill();
       ctx.restore();
 
       // ── 2. Composite segmented person on top within bangle bbox ──
@@ -607,19 +655,41 @@ function BangleCompositor({
   }, [videoRef, mirrored]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      style={{
+    <>
+      <canvas
+        ref={canvasRef}
+        style={{
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          pointerEvents: "none",
+          zIndex: 10,
+          // Always visible during debug — easier to diagnose
+          opacity: 1,
+        }}
+      />
+      {/* DEBUG HUD — remove once try-on confirmed working */}
+      <div style={{
         position: "absolute",
-        inset: 0,
-        width: "100%",
-        height: "100%",
+        top: "calc(env(safe-area-inset-top, 14px) + 110px)",
+        left: 12,
+        zIndex: 50,
+        background: "rgba(0,0,0,0.7)",
+        color: "#fff",
+        fontFamily: "monospace",
+        fontSize: 10,
+        lineHeight: 1.5,
+        padding: "6px 10px",
+        borderRadius: 8,
         pointerEvents: "none",
-        zIndex: 10,
-        opacity: tracking || pose !== null ? 1 : 0,
-        transition: "opacity 0.45s ease",
-      }}
-    />
+      }}>
+        <div>bangle: {bangleLoaded ? "✓ loaded" : bangleError ? "✗ FAILED" : "… loading"}</div>
+        <div>pose: {pose ? `${Math.round(pose.x)},${Math.round(pose.y)} w=${Math.round(pose.width)}` : "—"}</div>
+        <div>tracking: {tracking ? "✓" : "—"}</div>
+        {bangleError && <div style={{ color: "#ff8080" }}>{bangleError}</div>}
+      </div>
+    </>
   );
 }
 
