@@ -595,6 +595,158 @@ function BottomCard({ sizes, material }: { sizes: string[]; material: string }) 
 }
 
 /* ═══════════════════════════════════════════
+   Desktop gate — shown when screen ≥ 768px
+   ═══════════════════════════════════════════ */
+function DesktopGate({ productName, qrUrl }: { productName: string; qrUrl: string }) {
+  const router = useRouter();
+  const qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&color=1D3A61&bgcolor=ffffff&data=${encodeURIComponent(qrUrl)}&qzone=2`;
+
+  return (
+    <div style={{
+      minHeight: "100svh", background: "#F3F6FA",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      padding: "40px 24px",
+    }}>
+      <motion.div
+        initial={{ opacity: 0, y: 24 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.8, ease: EASE }}
+        style={{
+          background: "#fff",
+          borderRadius: 20,
+          boxShadow: "0 12px 60px rgba(29,58,97,0.10), 0 2px 8px rgba(29,58,97,0.06)",
+          padding: "clamp(40px, 6vw, 72px) clamp(32px, 5vw, 80px)",
+          maxWidth: 520, width: "100%",
+          display: "flex", flexDirection: "column", alignItems: "center",
+          gap: 0, textAlign: "center",
+        }}
+      >
+        {/* Back button */}
+        <button
+          onClick={() => router.back()}
+          style={{
+            position: "absolute" as const, top: 0, left: 0,
+            display: "flex", alignItems: "center", gap: 6,
+            background: "none", border: "none", cursor: "pointer",
+            color: "#1D3A61", opacity: 0.55,
+            fontFamily: "var(--font-inter, sans-serif)",
+            fontSize: 11, letterSpacing: "0.14em", textTransform: "uppercase",
+          }}
+        />
+
+        {/* Gold rule */}
+        <div style={{
+          width: 32, height: 1.5, background: "linear-gradient(90deg, #B8965A, #D4AF7A, #B8965A)",
+          borderRadius: 99, marginBottom: 28,
+        }} />
+
+        {/* Label */}
+        <p style={{
+          fontFamily: "var(--font-inter, sans-serif)",
+          fontSize: 9, letterSpacing: "0.28em", textTransform: "uppercase",
+          color: "#1D3A61", opacity: 0.5, margin: "0 0 14px",
+        }}>Virtual Try‑On</p>
+
+        {/* Heading */}
+        <h2 style={{
+          fontFamily: "var(--font-cormorant, serif)",
+          fontSize: "clamp(26px, 4vw, 38px)", fontWeight: 600,
+          color: "#1D3A61", margin: "0 0 10px", lineHeight: 1.25,
+          letterSpacing: "-0.01em",
+        }}>
+          {productName}
+        </h2>
+
+        {/* Sub */}
+        <p style={{
+          fontFamily: "var(--font-inter, sans-serif)",
+          fontSize: 13, color: "rgba(29,58,97,0.55)", lineHeight: 1.7,
+          margin: "0 0 36px", maxWidth: 340,
+        }}>
+          This experience is designed for your phone camera.<br />
+          Scan the code below to try it on — no app needed.
+        </p>
+
+        {/* QR */}
+        <motion.div
+          initial={{ opacity: 0, scale: 0.92 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ delay: 0.25, duration: 0.65, ease: EASE }}
+          style={{
+            background: "#fff",
+            borderRadius: 16,
+            padding: 16,
+            border: "1.5px solid rgba(29,58,97,0.10)",
+            boxShadow: "0 4px 24px rgba(29,58,97,0.08)",
+            marginBottom: 28,
+          }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={qrSrc}
+            alt="QR code to open try-on on mobile"
+            width={180}
+            height={180}
+            style={{ display: "block", borderRadius: 8 }}
+          />
+        </motion.div>
+
+        {/* Scan hint */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 36 }}>
+          <div style={{ height: 1, width: 40, background: "rgba(29,58,97,0.12)" }} />
+          <p style={{
+            fontFamily: "var(--font-inter, sans-serif)",
+            fontSize: 10, letterSpacing: "0.16em", textTransform: "uppercase",
+            color: "rgba(29,58,97,0.38)", margin: 0, whiteSpace: "nowrap",
+          }}>Point your phone camera here</p>
+          <div style={{ height: 1, width: 40, background: "rgba(29,58,97,0.12)" }} />
+        </div>
+
+        {/* Steps */}
+        <div style={{
+          display: "flex", gap: 24, flexWrap: "wrap" as const, justifyContent: "center",
+          marginBottom: 40,
+        }}>
+          {[
+            { n: "01", label: "Scan QR code" },
+            { n: "02", label: "Allow camera" },
+            { n: "03", label: "Show your wrist" },
+          ].map(({ n, label }) => (
+            <div key={n} style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", gap: 6 }}>
+              <span style={{
+                fontFamily: "var(--font-cormorant, serif)",
+                fontSize: 22, fontWeight: 600, color: "#1D3A61", opacity: 0.18,
+                lineHeight: 1,
+              }}>{n}</span>
+              <span style={{
+                fontFamily: "var(--font-inter, sans-serif)",
+                fontSize: 10, letterSpacing: "0.14em", textTransform: "uppercase",
+                color: "rgba(29,58,97,0.55)",
+              }}>{label}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Back link */}
+        <button
+          onClick={() => router.back()}
+          style={{
+            background: "none", border: "1.5px solid rgba(29,58,97,0.18)",
+            padding: "10px 28px", borderRadius: 999,
+            fontFamily: "var(--font-inter, sans-serif)",
+            fontSize: 9, letterSpacing: "0.22em", textTransform: "uppercase",
+            color: "#1D3A61", cursor: "pointer",
+            transition: "border-color 0.2s, background 0.2s",
+          }}
+        >
+          ← Back to product
+        </button>
+      </motion.div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
    Main page
    ═══════════════════════════════════════════ */
 export default function TryOnPage() {
@@ -602,6 +754,15 @@ export default function TryOnPage() {
   const router = useRouter();
   const id = Number(params.id);
   const product = getProductById(id);
+
+  // Detect desktop (screen width ≥ 768px) — evaluated client-side only
+  const [isDesktop, setIsDesktop] = useState(false);
+  useEffect(() => {
+    setIsDesktop(window.innerWidth >= 768);
+    const onResize = () => setIsDesktop(window.innerWidth >= 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   const [facingMode, setFacingMode] = useState<"user" | "environment">("environment");
   const [capturing, setCapturing] = useState(false);
@@ -658,6 +819,14 @@ export default function TryOnPage() {
         </p>
       </div>
     );
+  }
+
+  // Show desktop gate before starting camera / MediaPipe
+  if (isDesktop) {
+    const qrUrl = typeof window !== "undefined"
+      ? window.location.href
+      : `https://vibrant-kalam-5fc654.vercel.app/try-on/${id}`;
+    return <DesktopGate productName={product.name} qrUrl={qrUrl} />;
   }
 
   const overlaySrc = product.tryOnImage ?? product.images[0];
