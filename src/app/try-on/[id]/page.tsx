@@ -388,12 +388,15 @@ function TrackedBracelet({
   pose: WristPose | null;
   visible: boolean;
 }) {
+  const [imgFailed, setImgFailed] = useState(false);
   if (!pose) return null;
   // Asset is a 500x500 square PNG of the bangle in 3D perspective.
   // The bangle fills ~78% of the width; size the wrapper so pose.width
   // corresponds to the actual bracelet width, not the transparent padding.
   const ASSET_FILL = 0.78;
-  const wrapperW = pose.width / ASSET_FILL;
+  // Bump the rendered size — 1.55× palm width was too small to read on screen.
+  const SIZE_BOOST = 1.55;
+  const wrapperW = (pose.width / ASSET_FILL) * SIZE_BOOST;
   // Square asset → square wrapper. The bangle's vertical extent is shorter
   // than its horizontal, but `object-fit: contain` keeps it correctly placed.
   const wrapperH = wrapperW;
@@ -418,19 +421,51 @@ function TrackedBracelet({
         willChange: "transform, left, top, width, height",
       }}
     >
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src={src}
-        alt={name}
-        data-overlay="true"
-        draggable={false}
-        style={{
-          width: "100%", height: "100%",
-          objectFit: "contain",
-          pointerEvents: "none",
-          WebkitUserSelect: "none", userSelect: "none",
-        }}
-      />
+      {!imgFailed ? (
+        /* eslint-disable-next-line @next/next/no-img-element */
+        <img
+          src={src}
+          alt={name}
+          data-overlay="true"
+          draggable={false}
+          onError={() => {
+            console.error("[tryon] overlay image failed to load:", src);
+            setImgFailed(true);
+          }}
+          style={{
+            width: "100%", height: "100%",
+            objectFit: "contain",
+            pointerEvents: "none",
+            WebkitUserSelect: "none", userSelect: "none",
+          }}
+        />
+      ) : (
+        /* Fallback bracelet — drawn as a gold ring so the user sees SOMETHING
+           even if the PNG asset 404s. Width/height match the wrapper. */
+        <svg
+          viewBox="0 0 200 200"
+          width="100%"
+          height="100%"
+          style={{ display: "block" }}
+        >
+          <defs>
+            <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor="#E8C97A" />
+              <stop offset="50%" stopColor="#B8965A" />
+              <stop offset="100%" stopColor="#8C6A33" />
+            </linearGradient>
+          </defs>
+          <ellipse
+            cx="100" cy="100" rx="78" ry="32"
+            fill="none" stroke="url(#gold)" strokeWidth="14"
+          />
+          <ellipse
+            cx="100" cy="100" rx="78" ry="32"
+            fill="none" stroke="rgba(255,255,255,0.55)" strokeWidth="2"
+            strokeDasharray="3 6"
+          />
+        </svg>
+      )}
     </div>
   );
 }
